@@ -500,6 +500,32 @@ More Tesla vehicle sales in European and Asian countries were reported in May. D
 # ----------------------------- Main UI (simplified, from app/dashboard.py) -----------------------------
 def main():
     st.set_page_config(page_title="Tesla Regional Sales", layout="wide", page_icon="🚗")
+
+    # Green theme for the main action (URL field + ingest button). Red = stop.
+    st.markdown("""
+    <style>
+    /* Green border for the main URL input field */
+    div[data-testid="stTextInput"] input {
+        border: 2px solid #00C853 !important;
+        border-radius: 6px !important;
+    }
+
+    /* Green primary button for "Fetch & Ingest" */
+    div[data-testid="stButton"] button[kind="primary"] {
+        background-color: #00C853 !important;
+        color: white !important;
+        border: 2px solid #00C853 !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+    }
+
+    div[data-testid="stButton"] button[kind="primary"]:hover {
+        background-color: #00A040 !important;
+        border-color: #00A040 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.title("🚗 Tesla Regional Sales Dashboard")
     st.caption("Aggregate the excellent per-country data posted by @piloly, @Tslachan, @tslaming et al. into something you can actually query and trend.")
 
@@ -529,7 +555,7 @@ def main():
                         placeholder="Paste the entire text of the X post here (if the URL fetch failed)...",
                         key="fallback_manual_text"
                     )
-                    if st.button("📥 Ingest from pasted text", key="fallback_ingest_btn"):
+                    if st.button("📥 Ingest from pasted text", type="primary", key="fallback_ingest_btn"):
                         if not (manual_text or "").strip():
                             st.error("Please paste the post text.")
                         else:
