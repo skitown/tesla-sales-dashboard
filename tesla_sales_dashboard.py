@@ -15,6 +15,8 @@ Run with:
 Or on Mac, double-click TeslaSalesDashboard.command (after setup).
 
 See README.md for details on ingesting new X posts about Tesla sales.
+
+Also deployed publicly on Streamlit Cloud (see README).
 """
 
 from app.dashboard import main

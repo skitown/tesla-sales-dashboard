@@ -17,7 +17,7 @@ Core features:
 
 HOW TO RUN:
     source .venv/bin/activate
-    streamlit run app/dashboard.py
+    streamlit run tesla_sales_dashboard.py
 
 See README.md for full setup and the sidebar "Ingest" section for adding new posts.
 """
@@ -36,12 +36,8 @@ from parsers.fetch_x import fetch_post_from_url, extract_post_id
 
 
 def main():
-
-
-    def main():
-        st.set_page_config(page_title="Tesla Regional Sales", layout="wide", page_icon="🚗")
-
-        st.title("🚗 Tesla Regional Sales Dashboard")
+    st.set_page_config(page_title="Tesla Regional Sales", layout="wide", page_icon="🚗")
+    st.title("🚗 Tesla Regional Sales Dashboard")
     st.caption("Aggregate the excellent per-country data posted by @piloly, @Tslachan, @tslaming et al. into something you can actually query and trend.")
 
     # Sidebar controls
@@ -125,8 +121,9 @@ def main():
     df = load_df()
 
     if df.empty:
-        st.info("No data yet. Click 'Seed with recent examples' in the sidebar, or use the URL fetch in the left sidebar to add real posts.")
-        st.stop()
+        seed_examples()
+        df = load_df()
+        st.info("Seeded with demo data from recent example posts (May/June 2026). Use the sidebar to ingest fresh X posts.")
 
     # Tabs
     tab_latest, tab_trends, tab_all, tab_sources = st.tabs(["📊 Latest by Country", "📈 Trends & Charts", "All Data", "Sources & Help"])

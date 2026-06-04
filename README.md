@@ -2,13 +2,12 @@
 Tesla Regional Sales Dashboard
 ================================
 
-A lightweight, local-first Streamlit dashboard to track Tesla vehicle sales/registrations
-by country and region over time.
+A lightweight Streamlit dashboard (local-first + optional public hosted) to track Tesla vehicle sales/registrations by country and region over time.
 
 It turns the manual X posts (from @piloly, @Tslachan, @tslaming, etc.) that get shared
 in Discord into a persistent, searchable, visual history with tables, trends, and exports.
 
-Everything is local. No cloud. No accounts required beyond what you already use.
+Local: your data stays private in data/tesla_sales.db. Hosted: shared demo instance (ingests update it for everyone — handy for latest drops). No accounts needed.
 
 HOW TO RUN (copy-paste these into Terminal, in the folder holding this project):
 
@@ -75,13 +74,25 @@ The parser already handled all 17 of the example links you gave without errors (
 See the top of this file for the exact copy-paste commands.
 
 After starting the app:
-- Click the sidebar button **"Seed with recent examples"** to load sample May 2026 data from the accounts you follow.
-- Use the "Ingest a new post" section (URL + Fetch is easiest) whenever your friend shares a new X link.
+- It auto-seeds demo May/June 2026 data (from the example posts) if empty — dashboard shows immediately.
+- Use the "Ingest a new post" section (URL + Fetch is easiest) whenever your friend shares a new X link. (On the public hosted version, this updates it for everyone.)
 - Explore the tabs: Latest numbers, Trends & Charts, All Data (with export).
 
 The database lives at `data/tesla_sales.db` (gitignored — your local data stays private).
 
 Re-setup anytime with `./setup.sh`.
+
+## Public hosted version (Streamlit Cloud)
+The app is deployed publicly (see the exact copy-paste deploy steps you were given).
+
+Live URL (once deployed): https://tesla-sales-dashboard.streamlit.app  (or whatever name you chose in the Streamlit deploy wizard — match your Signal Lab style).
+
+On hosted:
+- Auto-loads the demo seed data on start (no need to click).
+- The ingest form is live for everyone: paste new X post URLs/text and it updates the dashboard for all visitors. Perfect for staying in sync when @piloly etc post fresh numbers.
+- Changes persist across sessions for the app.
+
+Your local clone stays fully private (data/ is gitignored).
 
 ## Data model (simplified)
 - `monthly_sales`:
