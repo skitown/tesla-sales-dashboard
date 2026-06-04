@@ -606,6 +606,9 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
+    # Temporary flag for clean screenshot (set to False after you get the shot)
+    hide_for_screenshot = True  # <<< CHANGE THIS TO False AFTER YOUR SCREENSHOT
+
     st.title("🚗 Tesla Regional Sales Dashboard")
     st.caption("Aggregate the excellent per-country data posted by @piloly, @Tslachan, @tslaming et al. into something you can actually query and trend.")
 
@@ -723,89 +726,90 @@ def main():
                         st.rerun()
 
     # Always-available manual text ingest (for when URL fetch is rate limited or fails)
-    st.markdown("---")
-    st.markdown("### Manual text ingest (paste post text directly)")
-    manual_text2 = st.text_area(
-        "Paste full post text here",
-        height=160,
-        placeholder="Paste the entire text from the X post (for when fetch fails or for testing)...",
-        key="always_manual_text"
-    )
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🧪 Test parse (no insert)", key="always_test_btn"):
-            if manual_text2 and manual_text2.strip():
-                text = manual_text2.strip()
-                author = "pasted manually"
-                main_rec = parse_piloly_post(text, None, author, strict=False)
-                rollups = parse_rollup_text(text, None, author)
-                st.write("**parse_piloly_post:**", main_rec.to_dict() if main_rec else "None (no country or sales extracted)")
-                st.write("**parse_rollup_text:**", [r.to_dict() for r in rollups] if rollups else "[]")
-                if not main_rec and not rollups:
-                    st.write("Debug: initial gate passed?", "reported" in text.lower() or "Giga Shanghai" in text or "Sales in " in text)
-                    st.write("First 300 chars of text:")
-                    st.code(text[:300])
-            else:
-                st.error("Paste some text to test.")
-    with col2:
-        if st.button("📥 Ingest this text", type="primary", key="always_ingest_btn"):
-            if not (manual_text2 or "").strip():
-                st.error("Please paste the post text.")
-            else:
-                text = manual_text2.strip()
-                author = "pasted manually"
-                recs = []
-                main_rec = parse_piloly_post(text, None, author, strict=False)
-                if main_rec:
-                    recs.append(main_rec)
-                rollups = parse_rollup_text(text, None, author)
-                recs.extend(rollups)
-
-                if not recs:
-                    st.error("Couldn't parse any sales records from the text. See the test parse output above for details. Notify admin with the text.")
-                    with st.expander("Debug info"):
-                        st.code(text[:600] + ("..." if len(text) > 600 else ""))
+    if not hide_for_screenshot:
+        st.markdown("---")
+        st.markdown("### Manual text ingest (paste post text directly)")
+        manual_text2 = st.text_area(
+            "Paste full post text here",
+            height=160,
+            placeholder="Paste the entire text from the X post (for when fetch fails or for testing)...",
+            key="always_manual_text"
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🧪 Test parse (no insert)", key="always_test_btn"):
+                if manual_text2 and manual_text2.strip():
+                    text = manual_text2.strip()
+                    author = "pasted manually"
+                    main_rec = parse_piloly_post(text, None, author, strict=False)
+                    rollups = parse_rollup_text(text, None, author)
+                    st.write("**parse_piloly_post:**", main_rec.to_dict() if main_rec else "None (no country or sales extracted)")
+                    st.write("**parse_rollup_text:**", [r.to_dict() for r in rollups] if rollups else "[]")
+                    if not main_rec and not rollups:
+                        st.write("Debug: initial gate passed?", "reported" in text.lower() or "Giga Shanghai" in text or "Sales in " in text)
+                        st.write("First 300 chars of text:")
+                        st.code(text[:300])
                 else:
-                    inserted = 0
-                    countries_updated = []
-                    for r in recs:
-                        if insert_record(r.to_dict()):
-                            inserted += 1
-                            countries_updated.append(r.country)
+                    st.error("Paste some text to test.")
+        with col2:
+            if st.button("📥 Ingest this text", type="primary", key="always_ingest_btn"):
+                if not (manual_text2 or "").strip():
+                    st.error("Please paste the post text.")
+                else:
+                    text = manual_text2.strip()
+                    author = "pasted manually"
+                    recs = []
+                    main_rec = parse_piloly_post(text, None, author, strict=False)
+                    if main_rec:
+                        recs.append(main_rec)
+                    rollups = parse_rollup_text(text, None, author)
+                    recs.extend(rollups)
 
-                    unique_countries = list(dict.fromkeys(countries_updated))
-                    st.success(
-                        f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
-                        f"(source: {author})."
-                    )
-                    st.session_state.pop("always_manual_text", None)
-                    st.session_state["data_cleared"] = False
-                    st.rerun()
+                    if not recs:
+                        st.error("Couldn't parse any sales records from the text. See the test parse output above for details. Notify admin with the text.")
+                        with st.expander("Debug info"):
+                            st.code(text[:600] + ("..." if len(text) > 600 else ""))
+                    else:
+                        inserted = 0
+                        countries_updated = []
+                        for r in recs:
+                            if insert_record(r.to_dict()):
+                                inserted += 1
+                                countries_updated.append(r.country)
+
+                        unique_countries = list(dict.fromkeys(countries_updated))
+                        st.success(
+                            f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
+                            f"(source: {author})."
+                        )
+                        st.session_state.pop("always_manual_text", None)
+                        st.session_state["data_cleared"] = False
+                        st.rerun()
 
     # Load data
     init_db()
     df = load_df()
 
-    if df.empty and not st.session_state.get("data_cleared", False):
+    if df.empty:
         seed_examples()
         df = load_df()
-        st.info("Seeded with demo data. Paste a real X post URL above (or use the text fallback if fetch fails) to add fresh numbers.")
 
     if df.empty:
         st.warning("No data loaded yet. Use the ingest box above. If you purged or a manual ingest failed to parse any records, the tables below will be empty (sum = 0). Share the exact text you pasted + any debug output with the admin so the parser can be fixed.")
 
     # Testing tool: allow purging seeded data so user can test manual ingest
-    with st.expander("⚠️ Testing: Purge / Load demo data"):
-        if st.button("Purge all seeded posts (clear DB for manual testing)"):
-            clear_all_data()
-            st.session_state["data_cleared"] = True
-            st.success("All data purged. Database is now empty. You can ingest manually (use the fallback text area if URL fetch fails).")
-            st.rerun()
-        if st.button("Load demo data (re-seed examples)"):
-            seed_examples()
-            st.session_state["data_cleared"] = False
-            st.success("Demo data loaded.")
-            st.rerun()
+    if not hide_for_screenshot:
+        with st.expander("⚠️ Testing: Purge / Load demo data"):
+            if st.button("Purge all seeded posts (clear DB for manual testing)"):
+                clear_all_data()
+                st.session_state["data_cleared"] = True
+                st.success("All data purged. Database is now empty. You can ingest manually (use the fallback text area if URL fetch fails).")
+                st.rerun()
+            if st.button("Load demo data (re-seed examples)"):
+                seed_examples()
+                st.session_state["data_cleared"] = False
+                st.success("Demo data loaded.")
+                st.rerun()
 
     tab_latest, tab_trends, tab_all, tab_sources = st.tabs(["📊 Latest by Country", "📈 Trends & Charts", "All Data", "Sources & Help"])
 
