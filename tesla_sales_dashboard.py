@@ -297,17 +297,19 @@ def fetch_post_from_url(url: str, timeout: float = 10.0) -> Dict[str, str]:
         resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True)
         if resp.status_code == 404:
             return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
+        if resp.status_code == 429:
+            return {"error": "Rate limit hit (429 Too Many Requests) on X's public syndication endpoint. This endpoint is rate-limited and is being hit too hard right now. Please wait a minute and try again, or notify the dashboard admin with the post link if it persists."}
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        return {"error": f"Network error fetching post: {e}. You can still paste the full text from the post manually."}
+        return {"error": f"Network error fetching post: {e}. Please try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
 
     text = (data.get("text") or "").strip()
     user = data.get("user", {}) or {}
     author = (user.get("screen_name") or user.get("name") or "").strip()
 
     if not text:
-        return {"error": "Could not extract text from the post. Paste the text contents manually."}
+        return {"error": "Could not extract text from the post. Please notify the dashboard admin with the post link."}
 
     return {
         "text": text,
