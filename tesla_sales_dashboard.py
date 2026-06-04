@@ -104,8 +104,11 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
         country = m.group(1).strip()
         sales = _parse_int(m.group(2))
         month_name = m.group(3).capitalize()
+        # Try to find a year in the text near the month, fallback to 2025/2026
+        year_match = re.search(r'\b(20\d{2})\b', text)
+        year = int(year_match.group(1)) if year_match else 2026
         try:
-            dt = dateparser.parse(f"1 {month_name} 2026")
+            dt = dateparser.parse(f"1 {month_name} {year}")
             return country, dt.year, dt.month, f"{month_name} {dt.year}"
         except Exception:
             pass
@@ -117,8 +120,10 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
     if m:
         month_name = m.group(1).capitalize()
         sales = _parse_int(m.group(2))
+        year_match = re.search(r'\b(20\d{2})\b', text)
+        year = int(year_match.group(1)) if year_match else 2026
         try:
-            dt = dateparser.parse(f"1 {month_name} 2026")
+            dt = dateparser.parse(f"1 {month_name} {year}")
             return "China (Giga Shanghai wholesale)", dt.year, dt.month, f"{month_name} {dt.year}"
         except Exception:
             pass
@@ -131,9 +136,11 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
         country = m.group(1).strip()
         month_name = m.group(2)
         sales = _parse_int(m.group(3))
+        year_match = re.search(r'\b(20\d{2})\b', text)
+        year = int(year_match.group(1)) if year_match else 2026
         try:
-            dt = dateparser.parse(f"1 {month_name} 2026")
-            return country, dt.year, dt.month, f"{month_name} 2026"
+            dt = dateparser.parse(f"1 {month_name} {year}")
+            return country, dt.year, dt.month, f"{month_name} {dt.year}"
         except Exception:
             pass
 
@@ -186,9 +193,10 @@ def _extract_bullets(text: str) -> Dict[str, Any]:
     return out
 
 
-def parse_piloly_post(text: str, post_url: str = None, author: str = "piloly") -> Optional[TeslaSalesRecord]:
-    if "reported" not in text.lower() and "Giga Shanghai" not in text and "Sales in " not in text:
-        return None
+def parse_piloly_post(text: str, post_url: str = None, author: str = "piloly", strict: bool = True) -> Optional[TeslaSalesRecord]:
+    if strict:
+        if "reported" not in text.lower() and "Giga Shanghai" not in text and "Sales in " not in text:
+            return None
 
     country, year, month, period = _extract_country_and_period(text)
     sales = _parse_sales_from_text(text)
@@ -564,21 +572,42 @@ def main():
                         placeholder="Paste the entire text of the X post here (if the URL fetch failed)...",
                         key="fallback_manual_text"
                     )
-                    if st.button("📥 Ingest from pasted text", type="primary", key="fallback_ingest_btn"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🧪 Test parse (no insert)", key="test_parse_btn"):
+                            if manual_text and manual_text.strip():
+                                text = manual_text.strip()
+                                author = "pasted manually"
+                                main_rec = parse_piloly_post(text, url, author, strict=False)
+                                rollups = parse_rollup_text(text, url, author)
+                                st.write("parse_piloly_post result:", main_rec.to_dict() if main_rec else None)
+                                st.write("parse_rollup_text results:", [r.to_dict() for r in rollups])
+                            else:
+                                st.error("Paste some text first to test.")
+                    with col2:
+                        if st.button("📥 Ingest from pasted text", type="primary", key="fallback_ingest_btn"):
                         if not (manual_text or "").strip():
                             st.error("Please paste the post text.")
                         else:
                             text = manual_text.strip()
                             author = "pasted manually"
                             recs = []
-                            main_rec = parse_piloly_post(text, url, author)
+                            main_rec = parse_piloly_post(text, url, author, strict=False)
                             if main_rec:
                                 recs.append(main_rec)
                             rollups = parse_rollup_text(text, url, author)
                             recs.extend(rollups)
 
                             if not recs:
-                                st.warning("Couldn't parse any sales records from the pasted text either. Please notify the dashboard admin (share the X post URL and text in Discord) so support can be added.")
+                                st.error("Couldn't parse any sales records from the pasted text. The parser is quite strict on wording. Please notify the dashboard admin (share the X post URL + the exact text you pasted in Discord) so we can improve the parser.")
+                                with st.expander("Debug info (for the admin)"):
+                                    st.write("Text length:", len(text))
+                                    st.code(text[:400] + ("..." if len(text) > 400 else ""))
+                                    has_reported = "reported" in text.lower()
+                                    has_giga = "Giga Shanghai" in text
+                                    has_sales_in = "Sales in " in text
+                                    st.write("Passed initial keyword gate?", has_reported or has_giga or has_sales_in)
+                                    st.write("Keywords found: reported=", has_reported, "Giga=", has_giga, "Sales in=", has_sales_in)
                             else:
                                 inserted = 0
                                 countries_updated = []
@@ -607,7 +636,7 @@ def main():
                     recs.extend(rollups)
 
                     if not recs:
-                        st.warning("Fetched the post but couldn't extract any sales records. The format might be new or different. Please notify the dashboard admin (share the X post URL in Discord) so support can be added.")
+                        st.error("Fetched the post but couldn't extract any sales records. The format might be new or different. Please notify the dashboard admin (share the X post URL + text in Discord) so we can improve the parser.")
                     else:
                         inserted = 0
                         countries_updated = []
@@ -631,7 +660,10 @@ def main():
     if df.empty and not st.session_state.get("data_cleared", False):
         seed_examples()
         df = load_df()
-        st.info("Seeded with demo data. Paste a real X post URL above to add fresh numbers.")
+        st.info("Seeded with demo data. Paste a real X post URL above (or use the text fallback if fetch fails) to add fresh numbers.")
+
+    if df.empty:
+        st.warning("No data loaded yet. Use the ingest box above. If you purged or a manual ingest failed to parse any records, the tables below will be empty (sum = 0). Share the exact text you pasted + any debug output with the admin so the parser can be fixed.")
 
     # Testing tool: allow purging seeded data so user can test manual ingest
     with st.expander("⚠️ Testing: Purge demo data"):
