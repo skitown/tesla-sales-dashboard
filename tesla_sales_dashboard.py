@@ -701,207 +701,34 @@ def main():
     st.title("🚗 Tesla Regional Sales Dashboard")
     st.caption("Tesla brand sales from public sources (CnEVPost, Tesla IR, national via Robbie context) + supplemental X compilations for rich notes. Only Tesla — no other OEM EV data stored as sales.")
 
-    # === Simple main-page ingest (URL only) ===
-    st.markdown("### Ingest latest from X")
-    st.markdown("Paste a public X post URL below. The tool fetches the text, parses the sales numbers, and updates (or adds) the relevant country/region. Newest data for a country+month always wins.")
+    # Public sources ingest is the main flow now (X kept only as supplemental for notes)
 
-    post_url = st.text_input(
-        "Paste X Post URL",
-        placeholder="example: https://x.com/piloly/status/2061793233076691388",
-        key="ingest_url"
-    )
-
-    if st.button("🚀 Fetch & Ingest", type="primary", key="ingest_btn"):
-        url = (post_url or "").strip()
-        if not url:
-            st.error("Please paste an X Post URL.")
-        else:
-            with st.spinner("Fetching post from X and parsing..."):
-                result = fetch_post_from_url(url)
-                if "error" in result:
-                    st.error(result["error"])
-                    st.markdown("**Automatic fetch failed.** Paste the full post text below to try ingesting it manually:")
-                    manual_text = st.text_area(
-                        "Full post text",
-                        height=160,
-                        placeholder="Paste the entire text of the X post here (if the URL fetch failed)...",
-                        key="fallback_manual_text"
-                    )
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🧪 Test parse (no insert)", key="test_parse_btn"):
-                            if manual_text and manual_text.strip():
-                                text = manual_text.strip()
-                                author = "pasted manually"
-                                main_rec = parse_piloly_post(text, url, author, strict=False)
-                                rollups = parse_rollup_text(text, url, author)
-                                st.write("**parse_piloly_post:**", main_rec.to_dict() if main_rec else "None (no country or sales extracted)")
-                                st.write("**parse_rollup_text:**", [r.to_dict() for r in rollups] if rollups else "[]")
-                                if not main_rec and not rollups:
-                                    st.write("Debug: initial gate passed?", "reported" in text.lower() or "Giga Shanghai" in text or "Sales in " in text)
-                                    st.write("First 300 chars of text:")
-                                    st.code(text[:300])
-                            else:
-                                st.error("Paste some text first to test.")
-                    with col2:
-                        if st.button("📥 Ingest from pasted text", type="primary", key="fallback_ingest_btn"):
-                            if not (manual_text or "").strip():
-                                st.error("Please paste the post text.")
-                            else:
-                                text = manual_text.strip()
-                                author = "pasted manually"
-                                recs = []
-                                main_rec = parse_piloly_post(text, url, author, strict=False)
-                                if main_rec:
-                                    recs.append(main_rec)
-                                rollups = parse_rollup_text(text, url, author)
-                                recs.extend(rollups)
-
-                                if not recs:
-                                    st.error("Couldn't parse any sales records from the pasted text. The parser is quite strict on wording. Please notify the dashboard admin (share the X post URL + the exact text you pasted in Discord) so we can improve the parser.")
-                                    with st.expander("Debug info (for the admin)"):
-                                        st.write("Text length:", len(text))
-                                        st.code(text[:400] + ("..." if len(text) > 400 else ""))
-                                        has_reported = "reported" in text.lower()
-                                        has_giga = "Giga Shanghai" in text
-                                        has_sales_in = "Sales in " in text
-                                        st.write("Passed initial keyword gate?", has_reported or has_giga or has_sales_in)
-                                        st.write("Keywords found: reported=", has_reported, "Giga=", has_giga, "Sales in=", has_sales_in)
-                                else:
-                                    inserted = 0
-                                    countries_updated = []
-                                    for r in recs:
-                                        if insert_record(r.to_dict()):
-                                            inserted += 1
-                                            countries_updated.append(r.country)
-
-                                    unique_countries = list(dict.fromkeys(countries_updated))
-                                    st.success(
-                                        f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
-                                        f"(source: {author})."
-                                    )
-                                    st.session_state["ingest_url"] = ""
-                                    st.session_state.pop("fallback_manual_text", None)
-                                    st.session_state["data_cleared"] = False
-                                    st.rerun()
+    # === Public sources (Tesla brand ONLY) - main ingest now ===
+    st.markdown("---")
+    st.markdown("### Update from public sources (Tesla brand only)")
+    st.caption("CnEVPost weekly (China insurance/Tesla), Tesla IR quarterly (global). Robbie BEV totals used only for share context — no non-Tesla rows are ever stored as sales.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Pull China Tesla (CnEVPost weekly) + Global (IR)", type="primary", key="public_pull"):
+            with st.spinner("Fetching public Tesla brand data..."):
+                new_recs = pull_public_tesla_data()
+                inserted = 0
+                countries = []
+                for r in new_recs:
+                    if insert_record(r):
+                        inserted += 1
+                        countries.append(r.get("country", "?"))
+                if inserted:
+                    st.success(f"✅ Inserted/updated {inserted} Tesla-only records: {', '.join(set(countries))}")
+                    st.session_state["data_cleared"] = False
+                    st.rerun()
                 else:
-                    text = result["text"]
-                    author = result.get("author", "piloly")
-
-                    recs = []
-                    main_rec = parse_piloly_post(text, url, author)
-                    if main_rec:
-                        recs.append(main_rec)
-                    rollups = parse_rollup_text(text, url, author)
-                    recs.extend(rollups)
-
-                    if not recs:
-                        st.error("Fetched the post but couldn't extract any sales records. The format might be new or different. Please notify the dashboard admin (share the X post URL + text in Discord) so we can improve the parser.")
-                    else:
-                        inserted = 0
-                        countries_updated = []
-                        for r in recs:
-                            if insert_record(r.to_dict()):
-                                inserted += 1
-                                countries_updated.append(r.country)
-
-                        unique_countries = list(dict.fromkeys(countries_updated))
-                        st.success(
-                            f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
-                            f"(source: @{author})."
-                        )
-                        st.session_state["ingest_url"] = ""
-                        st.session_state["data_cleared"] = False
-                        st.rerun()
-
-    # Always-available manual text ingest (for when URL fetch is rate limited or fails)
-    if not hide_for_screenshot:
-        st.markdown("---")
-        st.markdown("### Manual text ingest (paste post text directly)")
-        manual_text2 = st.text_area(
-            "Paste full post text here",
-            height=160,
-            placeholder="Paste the entire text from the X post (for when fetch fails or for testing)...",
-            key="always_manual_text"
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🧪 Test parse (no insert)", key="always_test_btn"):
-                if manual_text2 and manual_text2.strip():
-                    text = manual_text2.strip()
-                    author = "pasted manually"
-                    main_rec = parse_piloly_post(text, None, author, strict=False)
-                    rollups = parse_rollup_text(text, None, author)
-                    st.write("**parse_piloly_post:**", main_rec.to_dict() if main_rec else "None (no country or sales extracted)")
-                    st.write("**parse_rollup_text:**", [r.to_dict() for r in rollups] if rollups else "[]")
-                    if not main_rec and not rollups:
-                        st.write("Debug: initial gate passed?", "reported" in text.lower() or "Giga Shanghai" in text or "Sales in " in text)
-                        st.write("First 300 chars of text:")
-                        st.code(text[:300])
-                else:
-                    st.error("Paste some text to test.")
-        with col2:
-            if st.button("📥 Ingest this text", type="primary", key="always_ingest_btn"):
-                if not (manual_text2 or "").strip():
-                    st.error("Please paste the post text.")
-                else:
-                    text = manual_text2.strip()
-                    author = "pasted manually"
-                    recs = []
-                    main_rec = parse_piloly_post(text, None, author, strict=False)
-                    if main_rec:
-                        recs.append(main_rec)
-                    rollups = parse_rollup_text(text, None, author)
-                    recs.extend(rollups)
-
-                    if not recs:
-                        st.error("Couldn't parse any sales records from the text. See the test parse output above for details. Notify admin with the text.")
-                        with st.expander("Debug info"):
-                            st.code(text[:600] + ("..." if len(text) > 600 else ""))
-                    else:
-                        inserted = 0
-                        countries_updated = []
-                        for r in recs:
-                            if insert_record(r.to_dict()):
-                                inserted += 1
-                                countries_updated.append(r.country)
-
-                        unique_countries = list(dict.fromkeys(countries_updated))
-                        st.success(
-                            f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
-                            f"(source: {author})."
-                        )
-                        st.session_state.pop("always_manual_text", None)
-                        st.session_state["data_cleared"] = False
-                        st.rerun()
-
-    # === Public sources (Tesla brand ONLY) - Robbie for BEV context only, never non-Tesla sales ===
-    if not hide_for_screenshot:
-        st.markdown("---")
-        st.markdown("### Update from public sources (Tesla brand only)")
-        st.caption("CnEVPost weekly (China insurance/Tesla), Tesla IR quarterly (global). Robbie BEV totals used only for share context — no non-Tesla rows are ever stored as sales.")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Pull China Tesla (CnEVPost weekly) + Global (IR)", type="primary", key="public_pull"):
-                with st.spinner("Fetching public Tesla brand data..."):
-                    new_recs = pull_public_tesla_data()
-                    inserted = 0
-                    countries = []
-                    for r in new_recs:
-                        if insert_record(r):
-                            inserted += 1
-                            countries.append(r.get("country", "?"))
-                    if inserted:
-                        st.success(f"✅ Inserted/updated {inserted} Tesla-only records: {', '.join(set(countries))}")
-                        st.session_state["data_cleared"] = False
-                        st.rerun()
-                    else:
-                        st.info("No new Tesla brand records (or already up to date).")
-        with col2:
-            if st.button("Fetch Robbie BEV total (context for shares, e.g. Australia May)", key="robbie_context"):
-                total = fetch_robbie_bev_total("Australia", 2026, 5)
-                st.write(f"Australia May 2026 BEV total (all brands, for share calc): {total:,}" if total else "Not available in current CSV pull.")
-                st.caption("This is used in UI for context only. Tesla sales remain separate.")
+                    st.info("No new Tesla brand records (or already up to date).")
+    with col2:
+        if st.button("Fetch Robbie BEV total (context for shares, e.g. Australia May)", key="robbie_context"):
+            total = fetch_robbie_bev_total("Australia", 2026, 5)
+            st.write(f"Australia May 2026 BEV total (all brands, for share calc): {total:,}" if total else "Not available in current CSV pull.")
+            st.caption("This is used in UI for context only. Tesla sales remain separate.")
 
     # Load data
     init_db()
@@ -914,19 +741,10 @@ def main():
     if df.empty:
         st.warning("No data loaded yet. Use the ingest box above. If you purged or a manual ingest failed to parse any records, the tables below will be empty (sum = 0). Share the exact text you pasted + any debug output with the admin so the parser can be fixed.")
 
-    # Testing tool: allow purging seeded data so user can test manual ingest
-    if not hide_for_screenshot:
-        with st.expander("⚠️ Testing: Purge / Load demo data"):
-            if st.button("Purge all seeded posts (clear DB for manual testing)"):
-                clear_all_data()
-                st.session_state["data_cleared"] = True
-                st.success("All data purged. Database is now empty. You can ingest manually (use the fallback text area if URL fetch fails).")
-                st.rerun()
-            if st.button("Load demo data (re-seed examples)"):
-                seed_examples()
-                st.session_state["data_cleared"] = False
-                st.success("Demo data loaded.")
-                st.rerun()
+    # Testing tool hidden for live view (uncomment if needed for testing)
+    # if not hide_for_screenshot:
+    #     with st.expander("⚠️ Testing: Purge / Load demo data"):
+    #         ...
 
     tab_latest, tab_trends, tab_all, tab_sources = st.tabs(["📊 Latest by Country", "📈 Trends & Charts", "All Data", "Sources & Help"])
 
