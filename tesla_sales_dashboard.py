@@ -586,44 +586,44 @@ def main():
                                 st.error("Paste some text first to test.")
                     with col2:
                         if st.button("📥 Ingest from pasted text", type="primary", key="fallback_ingest_btn"):
-                        if not (manual_text or "").strip():
-                            st.error("Please paste the post text.")
-                        else:
-                            text = manual_text.strip()
-                            author = "pasted manually"
-                            recs = []
-                            main_rec = parse_piloly_post(text, url, author, strict=False)
-                            if main_rec:
-                                recs.append(main_rec)
-                            rollups = parse_rollup_text(text, url, author)
-                            recs.extend(rollups)
-
-                            if not recs:
-                                st.error("Couldn't parse any sales records from the pasted text. The parser is quite strict on wording. Please notify the dashboard admin (share the X post URL + the exact text you pasted in Discord) so we can improve the parser.")
-                                with st.expander("Debug info (for the admin)"):
-                                    st.write("Text length:", len(text))
-                                    st.code(text[:400] + ("..." if len(text) > 400 else ""))
-                                    has_reported = "reported" in text.lower()
-                                    has_giga = "Giga Shanghai" in text
-                                    has_sales_in = "Sales in " in text
-                                    st.write("Passed initial keyword gate?", has_reported or has_giga or has_sales_in)
-                                    st.write("Keywords found: reported=", has_reported, "Giga=", has_giga, "Sales in=", has_sales_in)
+                            if not (manual_text or "").strip():
+                                st.error("Please paste the post text.")
                             else:
-                                inserted = 0
-                                countries_updated = []
-                                for r in recs:
-                                    if insert_record(r.to_dict()):
-                                        inserted += 1
-                                        countries_updated.append(r.country)
+                                text = manual_text.strip()
+                                author = "pasted manually"
+                                recs = []
+                                main_rec = parse_piloly_post(text, url, author, strict=False)
+                                if main_rec:
+                                    recs.append(main_rec)
+                                rollups = parse_rollup_text(text, url, author)
+                                recs.extend(rollups)
 
-                                unique_countries = list(dict.fromkeys(countries_updated))
-                                st.success(
-                                    f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
-                                    f"(source: {author})."
-                                )
-                                st.session_state["ingest_url"] = ""
-                                st.session_state.pop("fallback_manual_text", None)
-                                st.rerun()
+                                if not recs:
+                                    st.error("Couldn't parse any sales records from the pasted text. The parser is quite strict on wording. Please notify the dashboard admin (share the X post URL + the exact text you pasted in Discord) so we can improve the parser.")
+                                    with st.expander("Debug info (for the admin)"):
+                                        st.write("Text length:", len(text))
+                                        st.code(text[:400] + ("..." if len(text) > 400 else ""))
+                                        has_reported = "reported" in text.lower()
+                                        has_giga = "Giga Shanghai" in text
+                                        has_sales_in = "Sales in " in text
+                                        st.write("Passed initial keyword gate?", has_reported or has_giga or has_sales_in)
+                                        st.write("Keywords found: reported=", has_reported, "Giga=", has_giga, "Sales in=", has_sales_in)
+                                else:
+                                    inserted = 0
+                                    countries_updated = []
+                                    for r in recs:
+                                        if insert_record(r.to_dict()):
+                                            inserted += 1
+                                            countries_updated.append(r.country)
+
+                                    unique_countries = list(dict.fromkeys(countries_updated))
+                                    st.success(
+                                        f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
+                                        f"(source: {author})."
+                                    )
+                                    st.session_state["ingest_url"] = ""
+                                    st.session_state.pop("fallback_manual_text", None)
+                                    st.rerun()
                 else:
                     text = result["text"]
                     author = result.get("author", "piloly")
