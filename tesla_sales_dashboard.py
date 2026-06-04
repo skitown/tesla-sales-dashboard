@@ -96,6 +96,7 @@ def _parse_int(text: str) -> Optional[int]:
 
 
 def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
+    # 1. Standard "Country reported N Tesla sales in Month"
     m = re.search(
         r"([A-Z][A-Za-z\s]+?)\s+reported\s+([\d,]+)\s+Tesla\s+sales.*?in\s+(January|February|March|April|May|June|July|August|September|October|November|December)",
         text, re.I
@@ -104,7 +105,6 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
         country = m.group(1).strip()
         sales = _parse_int(m.group(2))
         month_name = m.group(3).capitalize()
-        # Try to find a year in the text near the month, fallback to 2025/2026
         year_match = re.search(r'\b(20\d{2})\b', text)
         year = int(year_match.group(1)) if year_match else 2026
         try:
@@ -113,6 +113,7 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
         except Exception:
             pass
 
+    # 2. Giga Shanghai
     m = re.search(
         r"(?:In|For)\s+(January|February|March|April|May|June|July|August|September|October|November|December).*?Giga Shanghai.*?(\d[\d,]+)",
         text, re.I
@@ -128,6 +129,7 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
         except Exception:
             pass
 
+    # 3. Strict rollup with flag
     m = re.search(
         r"[🇨🇳🇹🇷🇳🇴🇳🇱🇸🇪🇧🇪🇪🇸🇩🇰🇵🇹🇫🇷🇮🇹🇬🇧🇦🇺🇩🇪🇹🇼🇭🇰🇮🇸🇨🇿🇷🇴🇮🇪🇨🇴🇰🇷🇯🇵]\s*([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?\d+%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)",
         text
@@ -136,6 +138,25 @@ def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int]
         country = m.group(1).strip()
         month_name = m.group(2)
         sales = _parse_int(m.group(3))
+        year_match = re.search(r'\b(20\d{2})\b', text)
+        year = int(year_match.group(1)) if year_match else 2026
+        try:
+            dt = dateparser.parse(f"1 {month_name} {year}")
+            return country, dt.year, dt.month, f"{month_name} {dt.year}"
+        except Exception:
+            pass
+
+    # 4. Loose country sales (for manual or variant posts)
+    m = re.search(
+        r"([A-Z][A-Za-z\s]+?)\s+(?:reported|has|sold|sales of)\s+([\d,]+)\s+Tesla",
+        text, re.I
+    )
+    if m:
+        country = m.group(1).strip()
+        sales = _parse_int(m.group(2))
+        # try to find month
+        month_match = re.search(r"in\s+(January|February|March|April|May|June|July|August|September|October|November|December)", text, re.I)
+        month_name = month_match.group(1).capitalize() if month_match else "Unknown"
         year_match = re.search(r'\b(20\d{2})\b', text)
         year = int(year_match.group(1)) if year_match else 2026
         try:
@@ -241,9 +262,11 @@ def parse_piloly_post(text: str, post_url: str = None, author: str = "piloly", s
 def _parse_sales_from_text(text: str) -> Optional[int]:
     patterns = [
         r"reported\s+([\d,]+)\s+Tesla",
-        r"(\d[\d,]+)\s*(?:Tesla sales|vehicles|units|Model 3 and Model Y)",
+        r"(\d[\d,]+)\s*(?:Tesla sales|vehicles|units|Model 3 and Model Y|sales)",
         r"Sales in [A-Z][a-z]+:\s*([\d,]+)",
         r"(\d[\d,]+)\s*deliveries",
+        r"(\d[\d,]+)\s*(?:Tesla|sales|vehicles)",
+        r":\s*([\d,]+)\s*(?:Tesla|sales)",
     ]
     for p in patterns:
         m = re.search(p, text, re.I)
@@ -254,6 +277,7 @@ def _parse_sales_from_text(text: str) -> Optional[int]:
 
 def parse_rollup_text(text: str, post_url: str = None, author: str = "Tslachan/tslaming") -> List[TeslaSalesRecord]:
     records = []
+    # Strict with flag
     pattern = r"[🇨🇳🇹🇷🇳🇴🇳🇱🇸🇪🇧🇪🇪🇸🇩🇰🇵🇹🇫🇷🇮🇹🇬🇧🇦🇺🇩🇪🇹🇼🇭🇰🇮🇸🇨🇿🇷🇴🇮🇪🇨🇴🇰🇷🇯🇵]\s*([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?(\d+(?:\.\d+)?)%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)"
     for m in re.finditer(pattern, text):
         country = m.group(1).strip()
@@ -263,13 +287,52 @@ def parse_rollup_text(text: str, post_url: str = None, author: str = "Tslachan/t
             yoy = None
         month_name = m.group(3)
         sales = _parse_int(m.group(4))
+        year_match = re.search(r'\b(20\d{2})\b', text)
+        year = int(year_match.group(1)) if year_match else 2026
         try:
-            dt = dateparser.parse(f"1 {month_name} 2026")
+            dt = dateparser.parse(f"1 {month_name} {year}")
             year, month = dt.year, dt.month
         except Exception:
             year, month = 2026, 5
 
         if sales is None:
+            continue
+        rec = TeslaSalesRecord(
+            country=country,
+            year=year,
+            month=month,
+            period_label=f"{month_name} {year}",
+            sales=sales,
+            yoy_pct=yoy,
+            source_post_url=post_url,
+            source_post_author=author,
+            ingested_at=datetime.utcnow().isoformat(),
+            raw_text=text,
+        )
+        records.append(rec)
+
+    # Loose rollup without flag (for manual pastes)
+    loose = r"([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?(\d+(?:\.\d+)?)%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)"
+    for m in re.finditer(loose, text, re.I):
+        country = m.group(1).strip()
+        try:
+            yoy = float(m.group(2))
+        except Exception:
+            yoy = None
+        month_name = m.group(3)
+        sales = _parse_int(m.group(4))
+        year_match = re.search(r'\b(20\d{2})\b', text)
+        year = int(year_match.group(1)) if year_match else 2026
+        try:
+            dt = dateparser.parse(f"1 {month_name} {year}")
+            year, month = dt.year, dt.month
+        except Exception:
+            year, month = 2026, 5
+
+        if sales is None:
+            continue
+        # avoid dups
+        if any(r.country.lower() == country.lower() and r.sales == sales for r in records):
             continue
         rec = TeslaSalesRecord(
             country=country,
@@ -580,8 +643,12 @@ def main():
                                 author = "pasted manually"
                                 main_rec = parse_piloly_post(text, url, author, strict=False)
                                 rollups = parse_rollup_text(text, url, author)
-                                st.write("parse_piloly_post result:", main_rec.to_dict() if main_rec else None)
-                                st.write("parse_rollup_text results:", [r.to_dict() for r in rollups])
+                                st.write("**parse_piloly_post:**", main_rec.to_dict() if main_rec else "None (no country or sales extracted)")
+                                st.write("**parse_rollup_text:**", [r.to_dict() for r in rollups] if rollups else "[]")
+                                if not main_rec and not rollups:
+                                    st.write("Debug: initial gate passed?", "reported" in text.lower() or "Giga Shanghai" in text or "Sales in " in text)
+                                    st.write("First 300 chars of text:")
+                                    st.code(text[:300])
                             else:
                                 st.error("Paste some text first to test.")
                     with col2:
@@ -623,6 +690,7 @@ def main():
                                     )
                                     st.session_state["ingest_url"] = ""
                                     st.session_state.pop("fallback_manual_text", None)
+                                    st.session_state["data_cleared"] = False
                                     st.rerun()
                 else:
                     text = result["text"]
@@ -651,7 +719,68 @@ def main():
                             f"(source: @{author})."
                         )
                         st.session_state["ingest_url"] = ""
+                        st.session_state["data_cleared"] = False
                         st.rerun()
+
+    # Always-available manual text ingest (for when URL fetch is rate limited or fails)
+    st.markdown("---")
+    st.markdown("### Manual text ingest (paste post text directly)")
+    manual_text2 = st.text_area(
+        "Paste full post text here",
+        height=160,
+        placeholder="Paste the entire text from the X post (for when fetch fails or for testing)...",
+        key="always_manual_text"
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🧪 Test parse (no insert)", key="always_test_btn"):
+            if manual_text2 and manual_text2.strip():
+                text = manual_text2.strip()
+                author = "pasted manually"
+                main_rec = parse_piloly_post(text, None, author, strict=False)
+                rollups = parse_rollup_text(text, None, author)
+                st.write("**parse_piloly_post:**", main_rec.to_dict() if main_rec else "None (no country or sales extracted)")
+                st.write("**parse_rollup_text:**", [r.to_dict() for r in rollups] if rollups else "[]")
+                if not main_rec and not rollups:
+                    st.write("Debug: initial gate passed?", "reported" in text.lower() or "Giga Shanghai" in text or "Sales in " in text)
+                    st.write("First 300 chars of text:")
+                    st.code(text[:300])
+            else:
+                st.error("Paste some text to test.")
+    with col2:
+        if st.button("📥 Ingest this text", type="primary", key="always_ingest_btn"):
+            if not (manual_text2 or "").strip():
+                st.error("Please paste the post text.")
+            else:
+                text = manual_text2.strip()
+                author = "pasted manually"
+                recs = []
+                main_rec = parse_piloly_post(text, None, author, strict=False)
+                if main_rec:
+                    recs.append(main_rec)
+                rollups = parse_rollup_text(text, None, author)
+                recs.extend(rollups)
+
+                if not recs:
+                    st.error("Couldn't parse any sales records from the text. See the test parse output above for details. Notify admin with the text.")
+                    with st.expander("Debug info"):
+                        st.code(text[:600] + ("..." if len(text) > 600 else ""))
+                else:
+                    inserted = 0
+                    countries_updated = []
+                    for r in recs:
+                        if insert_record(r.to_dict()):
+                            inserted += 1
+                            countries_updated.append(r.country)
+
+                    unique_countries = list(dict.fromkeys(countries_updated))
+                    st.success(
+                        f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
+                        f"(source: {author})."
+                    )
+                    st.session_state.pop("always_manual_text", None)
+                    st.session_state["data_cleared"] = False
+                    st.rerun()
 
     # Load data
     init_db()
@@ -666,11 +795,16 @@ def main():
         st.warning("No data loaded yet. Use the ingest box above. If you purged or a manual ingest failed to parse any records, the tables below will be empty (sum = 0). Share the exact text you pasted + any debug output with the admin so the parser can be fixed.")
 
     # Testing tool: allow purging seeded data so user can test manual ingest
-    with st.expander("⚠️ Testing: Purge demo data"):
+    with st.expander("⚠️ Testing: Purge / Load demo data"):
         if st.button("Purge all seeded posts (clear DB for manual testing)"):
             clear_all_data()
             st.session_state["data_cleared"] = True
             st.success("All data purged. Database is now empty. You can ingest manually (use the fallback text area if URL fetch fails).")
+            st.rerun()
+        if st.button("Load demo data (re-seed examples)"):
+            seed_examples()
+            st.session_state["data_cleared"] = False
+            st.success("Demo data loaded.")
             st.rerun()
 
     tab_latest, tab_trends, tab_all, tab_sources = st.tabs(["📊 Latest by Country", "📈 Trends & Charts", "All Data", "Sources & Help"])
