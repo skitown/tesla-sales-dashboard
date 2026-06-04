@@ -696,7 +696,7 @@ def main():
     """, unsafe_allow_html=True)
 
     # Temporary flag for clean screenshot (set to False after you get the shot)
-    hide_for_screenshot = True  # <<< CHANGE THIS TO False AFTER YOUR SCREENSHOT
+    hide_for_screenshot = False  # public sources UI enabled
 
     st.title("🚗 Tesla Regional Sales Dashboard")
     st.caption("Tesla brand sales from public sources (CnEVPost, Tesla IR, national via Robbie context) + supplemental X compilations for rich notes. Only Tesla — no other OEM EV data stored as sales.")
