@@ -39,6 +39,7 @@ import pandas as pd
 import plotly.express as px
 import dateutil.parser as dateparser
 import httpx
+import time
 
 
 # ----------------------------- TeslaSalesRecord -----------------------------
@@ -291,18 +292,32 @@ def fetch_post_from_url(url: str, timeout: float = 10.0) -> Dict[str, str]:
     if not post_id:
         return {"error": "Could not extract post ID from URL. Use a link like https://x.com/piloly/status/1234567890"}
 
-    syndication_url = f"https://cdn.syndication.twimg.com/tweet?id={post_id}&lang=en"
+    @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
+    def _fetch_tweet(pid: str) -> dict:
+        syndication_url = f"https://cdn.syndication.twimg.com/tweet?id={pid}&lang=en"
+        for attempt in range(3):  # simple retry with backoff for transient rate limits
+            try:
+                resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True)
+                if resp.status_code == 404:
+                    return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
+                if resp.status_code == 429:
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)  # 1s, 2s backoff
+                        continue
+                    return {"error": "Rate limit hit (429 Too Many Requests) on X's public syndication endpoint. This endpoint is rate-limited and is being hit too hard right now. Please wait a minute and try again, or notify the dashboard admin with the post link if it persists."}
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
+                return {"error": f"Network error fetching post: {e}. Please try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
+        return {"error": "Failed to fetch tweet after retries due to rate limiting."}
 
-    try:
-        resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True)
-        if resp.status_code == 404:
-            return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
-        if resp.status_code == 429:
-            return {"error": "Rate limit hit (429 Too Many Requests) on X's public syndication endpoint. This endpoint is rate-limited and is being hit too hard right now. Please wait a minute and try again, or notify the dashboard admin with the post link if it persists."}
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        return {"error": f"Network error fetching post: {e}. Please try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
+    data = _fetch_tweet(post_id)
+
+    if "error" in data:
+        return data
 
     text = (data.get("text") or "").strip()
     user = data.get("user", {}) or {}
