@@ -1,0 +1,16 @@
+streamlit>=1.35
+pandas>=2.2
+plotly>=5.22
+pydantic>=2.7
+python-dateutil>=2.9
+httpx>=0.27   # for fetching post content from X URL (syndication endpoint)
+# For future image/OCR parsing of charts (optional)
+# pillow
+# pytesseract
+# easyocr
+# For Discord bot (future)
+# discord.py
+# For X API polling (future, needs bearer token)
+# tweepy
+# For LLM-assisted parsing/vision (optional, use your key)
+# openai
