@@ -582,25 +582,28 @@ def fetch_cnevpost_tesla_recent(limit: int = 3) -> list:
     return records
 
 def fetch_tesla_ir_quarterly() -> list:
-    """Stub for Tesla IR quarterly deliveries (Tesla brand global). Hardcode recent for now; parse ir.tesla.com later."""
+    """Stub for Tesla IR quarterly deliveries (Tesla brand global, includes China). Hardcode recent for now; parse ir.tesla.com later."""
     # Example from known Q1 2026 etc. In prod parse the press releases.
     return [{
-        "country": "Global (Tesla deliveries)",
+        "country": "Global (Tesla deliveries, incl. China)",
         "year": 2026,
         "month": 3,  # Q1 end
         "period_label": "Q1 2026",
         "sales": 358023,  # example; replace with real
         "data_source_type": "tesla_ir_quarterly",
         "source_post_url": "https://ir.tesla.com/",
-        "notes": "Tesla reported global deliveries (quarterly ground truth / reconciliation). Not country registrations."
+        "notes": "Tesla reported global deliveries (quarterly ground truth / reconciliation). This number INCLUDES China. Different metric and cadence from CnEVPost China weekly insurance proxy."
     }]
 
 def pull_public_tesla_data() -> list:
-    """Pull Tesla-brand only records from public sources. Returns list of rec dicts for insert."""
+    """Pull Tesla-brand only records from public sources. Returns list of rec dicts for insert.
+    Note: CnEVPost China and Tesla IR Global are DIFFERENT series.
+    Global deliveries already include China. They are not meant to be added together.
+    """
     recs = []
-    # China Tesla from CnEVPost (high cadence, brand specific)
+    # China Tesla from CnEVPost (high cadence, brand specific, insurance proxy)
     recs.extend(fetch_cnevpost_tesla_recent(2))
-    # Global Tesla from IR (reconciliation)
+    # Global Tesla from IR (quarterly, includes China, official delivered vehicles)
     recs.extend(fetch_tesla_ir_quarterly())
     # Note: Robbie BEV totals are for context/shares only (see fetch_robbie_bev_total). Not added as sales.
     return recs
@@ -648,10 +651,10 @@ def main():
     # === Public sources (Tesla brand ONLY) - main ingest now ===
     st.markdown("---")
     st.markdown("### Update from public sources (Tesla brand only)")
-    st.caption("CnEVPost weekly (China insurance/Tesla), Tesla IR quarterly (global). Robbie BEV totals used only for share context — no non-Tesla rows are ever stored as sales.")
+    st.caption("CnEVPost = China-specific weekly insurance registrations (Tesla brand proxy). Tesla IR = Official quarterly global deliveries (INCLUDES China). These are different series/metrics — do not add them together. Robbie BEV totals for share context only.")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🔄 Pull China Tesla (CnEVPost weekly) + Global (IR)", type="primary", key="public_pull"):
+        if st.button("🔄 Pull China (CnEVPost) + Global Deliveries (Tesla IR)", type="primary", key="public_pull"):
             with st.spinner("Fetching public Tesla brand data..."):
                 new_recs = pull_public_tesla_data()
                 inserted = 0
@@ -695,6 +698,7 @@ def main():
 
         total_latest = latest["sales"].sum()
         st.metric("Sum of displayed latest months (partial coverage)", f"{total_latest:,}")
+        st.caption("Note: 'China' (weekly insurance proxy) and 'Global (Tesla deliveries)' are different series. Global already includes China. Sum is just for the rows shown — not a true worldwide total.")
 
     with tab_trends:
         st.subheader("Sales over time (select countries)")
