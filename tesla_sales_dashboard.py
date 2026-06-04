@@ -696,12 +696,6 @@ def main():
         display = latest[[c for c in cols if c in latest.columns]].copy()
         st.dataframe(display, width="stretch", hide_index=True)
 
-        # Sum only country-level rows (exclude the Global quarterly which is a different series and already includes China)
-        country_latest = latest[~latest["country"].str.contains("Global", case=False, na=False)]
-        total_latest = country_latest["sales"].sum()
-        st.metric("Sum of displayed latest months (partial coverage)", f"{total_latest:,}")
-        st.caption("Note: Sum excludes 'Global (Tesla deliveries)' row. Global is a separate quarterly series that already includes China. China weekly is a high-frequency proxy (different from quarterly deliveries).")
-
     with tab_trends:
         st.subheader("Sales over time (select countries)")
         countries = sorted(df["country"].unique().tolist())
