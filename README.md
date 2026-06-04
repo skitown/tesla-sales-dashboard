@@ -1,20 +1,39 @@
-# Tesla Regional Sales Dashboard
+"""
+Tesla Regional Sales Dashboard
+================================
 
-A lightweight, local-first dashboard to aggregate and visualize Tesla vehicle sales/registrations by country and region. It turns the manual work your friend does (posting X links in Discord with per-country numbers, charts, growth rates, market share) into a queryable, historical, visual system.
+A lightweight, local-first Streamlit dashboard to track Tesla vehicle sales/registrations
+by country and region over time.
+
+It turns the manual X posts (from @piloly, @Tslachan, @tslaming, etc.) that get shared
+in Discord into a persistent, searchable, visual history with tables, trends, and exports.
+
+Everything is local. No cloud. No accounts required beyond what you already use.
+
+HOW TO RUN (copy-paste these into Terminal, in the folder holding this project):
+
+    # first time only — create venv and install dependencies:
+    ./setup.sh
+
+    # every time — activate and start the app (opens in your browser):
+    source .venv/bin/activate
+    streamlit run app/dashboard.py
+
+To stop it: click the Terminal window and press Ctrl-C.
+
+Data note: The tool ingests the high-quality, already-standardized numbers from
+the expert X accounts. It does NOT scrape official government sources directly
+(yet). Paste the post text or URL when new data drops.
+
+(We use the full `source .venv/bin/activate` + `streamlit run ...` pattern because
+the streamlit launcher isn't reliably on PATH on a default macOS setup.)
+"""
 
 ## Why this exists
 - Tesla does **not** publish detailed monthly sales by country.
 - Data comes from dozens of national registration authorities, industry associations (CPCA, FCAI/VFACTS, KBA, OFV, ACEA, etc.), and is staggered, in different formats (PDFs, websites, tables).
 - A small group of dedicated accounts on X (@piloly, @Tslachan, @tslaming, @SawyerMerritt and others) manually find, standardize, and visualize the data with consistent stats + charts every month.
 - Your friend reposts the links. This tool lets you (and the Discord group) capture that signal systematically, see trends over time, totals, rankings, without copy-pasting into spreadsheets every time.
-
-## Core idea
-1. **Primary ingestion**: Monitor or paste posts from the expert X curators (highest signal + context).
-2. **Parser**: Extracts structured data from their consistent post format (headline numbers, bullets for growth/model mix, provenance).
-3. **Optional direct sources**: Scrape or note official feeds for key markets (China CPCA, Australia thedriven.io/FCAI, Norway OFV, Germany KBA, ACEA Europe, etc.).
-4. **Storage**: Local SQLite (or CSV/Parquet) with full provenance.
-5. **Dashboard**: Streamlit app — latest numbers table, time series, YTD aggregates, country groups (Europe, Asia ex-China, etc.), source links back to original X post + official report.
-6. **Discord-friendly**: Easy to add via paste or (future) bot.
 
 ## Key tracked "regions"
 - **China**: Giga Shanghai wholesale (local + exports) via CPCA. Often the biggest single number.
@@ -50,24 +69,17 @@ Primary X accounts to watch:
 
 The parser already handled all 17 of the example links you gave without errors (detailed per-country + rollups). Adding more is usually just pasting the new text.
 
-## Quick start (local) — already set up for you
-The venv and dependencies are pre-installed (see `setup.sh`).
+## Quick start (local)
+See the top of this file for the exact copy-paste commands.
 
-```bash
-cd ~/tesla-sales-dashboard
-source .venv/bin/activate
-streamlit run app/dashboard.py
-```
+After starting the app:
+- Click the sidebar button **"Seed with recent examples"** to load sample May 2026 data from the accounts you follow.
+- Use the "Ingest a new post" section (URL + Fetch is easiest) whenever your friend shares a new X link.
+- Explore the tabs: Latest numbers, Trends & Charts, All Data (with export).
 
-- In the sidebar, click **"Seed with recent examples (May/June 2026)"** — this parses real posts from @piloly and @Tslachan (Germany 5,111, China 85,982 wholesale, Australia 6,433, plus a Europe/Asia rollup) and loads ~13 rows.
-- Paste any new post text your friend shares (the main detailed one is best) into the sidebar ingest box + optional URL. Hit "Parse & Save".
-- Switch tabs for latest table, interactive trends (Plotly), full data + CSV export.
+The database lives at `data/tesla_sales.db` (gitignored — your local data stays private).
 
-The DB file is at `data/tesla_sales.db` — you can open it with any SQLite tool or `pandas.read_sql`.
-
-If you ever want a clean re-setup: `./setup.sh` (it will recreate the venv).
-
-See `app/` and `parsers/` for code.
+Re-setup anytime with `./setup.sh`.
 
 ## Data model (simplified)
 - `monthly_sales`:

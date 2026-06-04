@@ -1,6 +1,25 @@
 """
-Tesla Regional Sales Dashboard (Streamlit)
-Run with: streamlit run app/dashboard.py
+Tesla Regional Sales Dashboard
+================================
+
+A local Streamlit app for tracking Tesla sales by country/region.
+
+It ingests the detailed monthly reports posted on X by accounts like @piloly,
+@Tslachan, @tslaming, etc. (the people who do the hard work of pulling and
+standardizing data from CPCA, OFV, KBA, FCAI, etc.).
+
+Core features:
+- Paste X post URL or text to ingest new monthly data
+- "Latest by Country" table with provenance
+- Interactive time series and growth charts
+- Full historical table + CSV export
+- Local SQLite storage (your data stays on your machine)
+
+HOW TO RUN:
+    source .venv/bin/activate
+    streamlit run app/dashboard.py
+
+See README.md for full setup and the sidebar "Ingest" section for adding new posts.
 """
 import streamlit as st
 import pandas as pd
