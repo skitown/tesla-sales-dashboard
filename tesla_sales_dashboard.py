@@ -295,24 +295,30 @@ def fetch_post_from_url(url: str, timeout: float = 10.0) -> Dict[str, str]:
     @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
     def _fetch_tweet(pid: str) -> dict:
         syndication_url = f"https://cdn.syndication.twimg.com/tweet?id={pid}&lang=en"
-        for attempt in range(3):  # simple retry with backoff for transient rate limits
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        for attempt in range(4):  # more aggressive retries
             try:
-                resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True)
+                resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True, headers=headers)
                 if resp.status_code == 404:
                     return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
                 if resp.status_code == 429:
-                    if attempt < 2:
-                        time.sleep(2 ** attempt)  # 1s, 2s backoff
+                    if attempt < 3:
+                        time.sleep(5 * (attempt + 1))  # longer backoff: 5s, 10s, 15s
                         continue
-                    return {"error": "Rate limit hit (429 Too Many Requests) on X's public syndication endpoint. This endpoint is rate-limited and is being hit too hard right now. Please wait a minute and try again, or notify the dashboard admin with the post link if it persists."}
+                    # Raise so we don't cache the 429 error (important for repeated failures)
+                    raise RuntimeError("429_from_x")
                 resp.raise_for_status()
                 return resp.json()
+            except RuntimeError as e:
+                if "429_from_x" in str(e):
+                    return {"error": "X's public syndication endpoint is currently returning 429 rate limits for most requests (this is common even for individual posts from cloud services like Streamlit). It may not be specific to this post. Please wait a minute and try again, or notify the dashboard admin with the post link."}
+                raise
             except Exception as e:
-                if attempt < 2:
-                    time.sleep(1)
+                if attempt < 3:
+                    time.sleep(2)
                     continue
                 return {"error": f"Network error fetching post: {e}. Please try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
-        return {"error": "Failed to fetch tweet after retries due to rate limiting."}
+        return {"error": "Failed to fetch tweet after retries."}
 
     data = _fetch_tweet(post_id)
 
@@ -503,44 +509,85 @@ def main():
 
     post_url = st.text_input(
         "Paste X Post URL",
-        placeholder="https://x.com/piloly/status/2061793233076691388",
+        placeholder="example: https://x.com/piloly/status/2061793233076691388",
         key="ingest_url"
     )
 
-    if st.button("🚀 Fetch & Ingest", type="primary", disabled=not post_url.strip(), key="ingest_btn"):
-        url = post_url.strip()
-        with st.spinner("Fetching post from X and parsing..."):
-            result = fetch_post_from_url(url)
-            if "error" in result:
-                st.error(result["error"])
-            else:
-                text = result["text"]
-                author = result.get("author", "piloly")
-
-                recs = []
-                main_rec = parse_piloly_post(text, url, author)
-                if main_rec:
-                    recs.append(main_rec)
-                rollups = parse_rollup_text(text, url, author)
-                recs.extend(rollups)
-
-                if not recs:
-                    st.warning("Fetched the post but couldn't extract any sales records. The format might be new or different. Please notify the dashboard admin (share the X post URL in Discord) so support can be added.")
-                else:
-                    inserted = 0
-                    countries_updated = []
-                    for r in recs:
-                        if insert_record(r.to_dict()):
-                            inserted += 1
-                            countries_updated.append(r.country)
-
-                    unique_countries = list(dict.fromkeys(countries_updated))
-                    st.success(
-                        f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
-                        f"(source: @{author})."
+    if st.button("🚀 Fetch & Ingest", type="primary", key="ingest_btn"):
+        url = (post_url or "").strip()
+        if not url:
+            st.error("Please paste an X Post URL.")
+        else:
+            with st.spinner("Fetching post from X and parsing..."):
+                result = fetch_post_from_url(url)
+                if "error" in result:
+                    st.error(result["error"])
+                    st.markdown("**Automatic fetch failed.** Paste the full post text below to try ingesting it manually:")
+                    manual_text = st.text_area(
+                        "Full post text",
+                        height=160,
+                        placeholder="Paste the entire text of the X post here (if the URL fetch failed)...",
+                        key="fallback_manual_text"
                     )
-                    st.session_state["ingest_url"] = ""
-                    st.rerun()
+                    if st.button("📥 Ingest from pasted text", key="fallback_ingest_btn"):
+                        if not (manual_text or "").strip():
+                            st.error("Please paste the post text.")
+                        else:
+                            text = manual_text.strip()
+                            author = "pasted manually"
+                            recs = []
+                            main_rec = parse_piloly_post(text, url, author)
+                            if main_rec:
+                                recs.append(main_rec)
+                            rollups = parse_rollup_text(text, url, author)
+                            recs.extend(rollups)
+
+                            if not recs:
+                                st.warning("Couldn't parse any sales records from the pasted text either. Please notify the dashboard admin (share the X post URL and text in Discord) so support can be added.")
+                            else:
+                                inserted = 0
+                                countries_updated = []
+                                for r in recs:
+                                    if insert_record(r.to_dict()):
+                                        inserted += 1
+                                        countries_updated.append(r.country)
+
+                                unique_countries = list(dict.fromkeys(countries_updated))
+                                st.success(
+                                    f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
+                                    f"(source: {author})."
+                                )
+                                st.session_state["ingest_url"] = ""
+                                st.session_state.pop("fallback_manual_text", None)
+                                st.rerun()
+                else:
+                    text = result["text"]
+                    author = result.get("author", "piloly")
+
+                    recs = []
+                    main_rec = parse_piloly_post(text, url, author)
+                    if main_rec:
+                        recs.append(main_rec)
+                    rollups = parse_rollup_text(text, url, author)
+                    recs.extend(rollups)
+
+                    if not recs:
+                        st.warning("Fetched the post but couldn't extract any sales records. The format might be new or different. Please notify the dashboard admin (share the X post URL in Discord) so support can be added.")
+                    else:
+                        inserted = 0
+                        countries_updated = []
+                        for r in recs:
+                            if insert_record(r.to_dict()):
+                                inserted += 1
+                                countries_updated.append(r.country)
+
+                        unique_countries = list(dict.fromkeys(countries_updated))
+                        st.success(
+                            f"✅ Ingested/updated {inserted} record(s) for: **{', '.join(unique_countries)}** "
+                            f"(source: @{author})."
+                        )
+                        st.session_state["ingest_url"] = ""
+                        st.rerun()
 
     # Load data
     init_db()
