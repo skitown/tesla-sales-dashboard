@@ -515,67 +515,6 @@ def get_latest_by_country() -> pd.DataFrame:
     return df.groupby("country", as_index=False).first()
 
 
-def seed_examples():
-    """Seed a few real examples from the May/June 2026 wave so the dashboard is immediately useful."""
-    examples = [
-        ("""Germany reported 5,111 Tesla sales and 2.1% market share in May. BEV penetration is 25% and Tesla has 8.5% of this segment. 🇩🇪
-
-• Market share is 31 basis points or 17% above the 3-month trailing average of 1.8%
-• +322% vs. May last year and +125% compared to February the second month of the previous quarter
-• Second best May ever
-• Highest quarter after two months since 24Q1 (9 quarters)
-• Last three months +212.2% vs. December - February
-• Year-to-date +200% over same period last year
-• Year-to-date is 109% or 13.1/12 of last year's total""",
-         "https://x.com/piloly/status/2062117892619952546", "piloly"),
-
-        ("""In May, Tesla's Giga Shanghai wholesale sales (local in China and exports) were 85,982 Model 3 and Model Y. 🇨🇳
-
-This represents a year-on-year increase of 39.4% and a month-on-month increase of 8.2%. Compared to last year, year-to-date sales are up by 29.4%.
-
-Highest sales after 2 months into the quarter since 22Q4 (14 quarters).""",
-         "https://x.com/piloly/status/2061793233076691388", "piloly"),
-
-        ("""Australia reported 6,433 Tesla sales and 6% market share in May. BEV penetration reaches new record of 19.9% and Tesla has 30.2% of this segment. 🇦🇺
-
-• Market share is 336 basis points or 126% above the 3-month trailing average of 2.7%
-• Highest market share ever
-• Tesla 6th best-selling brand
-• Model Y best-selling car
-• 87% Model Y and 13% Model 3
-• +65% vs. May last year
-• Best May ever
-• Year-to-date +56% over same period last year""",
-         "https://x.com/piloly/status/2062105828568555573", "piloly"),
-
-        ("""$TSLA (Update #3)
-More Tesla vehicle sales in European and Asian countries were reported in May. Data from UK, Australia, Germany, Taiwan and Turkey were added.
-
-🇬🇧 UK : +18% (Sales in May: 2,812) 
-🇳🇴 Norway : +27% (Sales in May: 3,295)
-🇳🇱 Netherlands : +31% (Sales in May: 1,387)
-🇦🇺 Australia : +65% (Sales in May: 6,433)
-🇩🇪 Germany : +323% (Sales in May: 5,111)
-🇫🇷 France: +655% (Sales in May: 5,446)
-🇹🇼 Taiwan : +804% (Sales in May: 1,781)
-
-🇮🇹 Italy : -24% (Sales in May: 654)
-🇹🇷 Turkey : -76% (Sales in May: 370)""",
-         "https://x.com/Tslachan/status/2062152188458393809", "Tslachan"),
-    ]
-
-    count = 0
-    for text, url, author in examples:
-        rec = parse_piloly_post(text, url, author)
-        if rec:
-            if insert_record(rec.to_dict()):
-                count += 1
-        for r in parse_rollup_text(text, url, author):
-            if insert_record(r.to_dict()):
-                count += 1
-    print(f"Seeded/updated {count} records (including rollups).")
-
-
 def clear_all_data():
     """Delete every row from the monthly_sales table. Use for testing/manual ingest."""
     conn = get_conn()
@@ -699,9 +638,12 @@ def main():
     hide_for_screenshot = False  # public sources UI enabled
 
     st.title("🚗 Tesla Regional Sales Dashboard")
-    st.caption("Tesla brand sales from public sources (CnEVPost, Tesla IR, national via Robbie context) + supplemental X compilations for rich notes. Only Tesla — no other OEM EV data stored as sales.")
+    st.caption("Tesla brand sales from public sources (CnEVPost weekly China, Tesla IR quarterly, Robbie for BEV context). Only Tesla — no other OEM EV data. Old X data purged.")
 
-    # Public sources ingest is the main flow now (X kept only as supplemental for notes)
+    # Clean any leftover old X/demo data (one-time per session)
+    if "old_x_data_cleared" not in st.session_state:
+        clear_all_data()
+        st.session_state["old_x_data_cleared"] = True
 
     # === Public sources (Tesla brand ONLY) - main ingest now ===
     st.markdown("---")
@@ -735,11 +677,7 @@ def main():
     df = load_df()
 
     if df.empty:
-        seed_examples()
-        df = load_df()
-
-    if df.empty:
-        st.warning("No data loaded yet. Use the ingest box above. If you purged or a manual ingest failed to parse any records, the tables below will be empty (sum = 0). Share the exact text you pasted + any debug output with the admin so the parser can be fixed.")
+        st.warning("No data loaded yet. Use the public sources button above to pull fresh Tesla data.")
 
     # Testing tool hidden for live view (uncomment if needed for testing)
     # if not hide_for_screenshot:
@@ -788,24 +726,18 @@ def main():
         st.download_button("Download CSV", csv, "tesla_regional_sales.csv", "text/csv")
 
     with tab_sources:
-        st.markdown("See the full list of underlying sources and the X accounts that do the hard work:")
+        st.markdown("See the full list of underlying public sources:")
         st.markdown("📖 **[Supporting docs in tesla-sales-extras/docs_sources.md and PUBLIC_DATA_INGEST_PLAN.md]**")
         st.markdown("""
         **Public automated sources (Tesla brand only)**:
-        - CnEVPost weekly insurance registrations (China Tesla + competitors, but we extract Tesla only).
+        - CnEVPost weekly insurance registrations (China Tesla specific).
         - Tesla IR quarterly deliveries (global ground truth / reconciliation).
         - Robbie Andrew CSV (BEV *totals* for share context only — never stored as Tesla sales. CC-BY 4.0, credit in footer).
 
-        **Primary X accounts (supplemental for rich notes/context/charts)**:
-        - @piloly — detailed per-country with excellent charts and context (the gold standard for this dashboard).
-        - @Tslachan — big rollups, China, South Korea, Europe/Asia updates.
-        - @tslaming — Japan, Norway daily/weekly, UK, timely "good news" posts.
-        - @SawyerMerritt — high-signal major market records + links to articles (thedriven.io etc.).
-
-        The public pulls (above) are the reliable backbone. X ingest is kept as supplemental for the human-added context.
+        All old X post data and references have been purged. The dashboard is now driven by public sources only.
         """)
 
-    st.caption("Tesla brand only. Public sources (CnEVPost weekly China, Tesla IR, Robbie for BEV context) + supplemental X for notes. CC-BY Robbie Andrew for any context data used.")
+    st.caption("Tesla brand only. Public sources (CnEVPost, Tesla IR, Robbie for BEV context). CC-BY Robbie Andrew for context data.")
 
 
 if __name__ == "__main__":
