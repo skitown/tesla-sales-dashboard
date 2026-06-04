@@ -497,6 +497,15 @@ More Tesla vehicle sales in European and Asian countries were reported in May. D
     print(f"Seeded/updated {count} records (including rollups).")
 
 
+def clear_all_data():
+    """Delete every row from the monthly_sales table. Use for testing/manual ingest."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM monthly_sales")
+    conn.commit()
+    conn.close()
+
+
 # ----------------------------- Main UI (simplified, from app/dashboard.py) -----------------------------
 def main():
     st.set_page_config(page_title="Tesla Regional Sales", layout="wide", page_icon="🚗")
@@ -619,10 +628,18 @@ def main():
     init_db()
     df = load_df()
 
-    if df.empty:
+    if df.empty and not st.session_state.get("data_cleared", False):
         seed_examples()
         df = load_df()
         st.info("Seeded with demo data. Paste a real X post URL above to add fresh numbers.")
+
+    # Testing tool: allow purging seeded data so user can test manual ingest
+    with st.expander("⚠️ Testing: Purge demo data"):
+        if st.button("Purge all seeded posts (clear DB for manual testing)"):
+            clear_all_data()
+            st.session_state["data_cleared"] = True
+            st.success("All data purged. Database is now empty. You can ingest manually (use the fallback text area if URL fetch fails).")
+            st.rerun()
 
     tab_latest, tab_trends, tab_all, tab_sources = st.tabs(["📊 Latest by Country", "📈 Trends & Charts", "All Data", "Sources & Help"])
 
