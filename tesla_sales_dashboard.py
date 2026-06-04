@@ -525,14 +525,6 @@ def main():
                     st.session_state["ingest_url"] = ""
                     st.rerun()
 
-    st.caption("Primary flow is URL-only. The parser is tuned to the consistent style used by @piloly and similar accounts.")
-
-    with st.expander("Demo data (May/June 2026 seed examples)"):
-        if st.button("🔄 Seed with recent examples"):
-            seed_examples()
-            st.success("Seeded sample data from real posts.")
-            st.rerun()
-
     # Load data
     init_db()
     df = load_df()
