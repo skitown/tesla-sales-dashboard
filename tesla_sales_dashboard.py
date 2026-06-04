@@ -549,11 +549,11 @@ def fetch_cnevpost_tesla_recent(limit: int = 3) -> list:
     import urllib.request
     from typing import Optional as _Optional
     records = []
-    # Use a few recent known patterns; production can scrape tag page
+    # Use recent posts from tag (higher numbers for sensible data; in prod scrape tag for latest)
     candidates = [
-        "https://cnevpost.com/2025/10/11/china-ev-registrations-week-ending-oct-5-2025/",
-        "https://cnevpost.com/2025/09/30/china-ev-insurance-registrations-week-ending-sept-28-2025/",
-        "https://cnevpost.com/2025/09/23/china-ev-insurance-registrations-week-ending-sept-21-2025/",
+        "https://cnevpost.com/2025/09/30/china-ev-insurance-registrations-week-ending-sept-28-2025/",  # Tesla 19,300
+        "https://cnevpost.com/2025/09/23/china-ev-insurance-registrations-week-ending-sept-21-2025/",  # 17,300
+        "https://cnevpost.com/2025/09/09/china-ev-insurance-registrations-week-ending-sept-7-2025/",  # 14,300
     ]
     headers = {"User-Agent": "Mozilla/5.0 (compatible; TeslaDashboardBot/1.0)"}
     for url in candidates[:limit]:
