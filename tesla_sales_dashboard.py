@@ -243,7 +243,7 @@ def _parse_sales_from_text(text: str) -> Optional[int]:
     return None
 
 
-def parse_rollup_text(text: str, post_url: str = None) -> List[TeslaSalesRecord]:
+def parse_rollup_text(text: str, post_url: str = None, author: str = "Tslachan/tslaming") -> List[TeslaSalesRecord]:
     records = []
     pattern = r"[🇨🇳🇹🇷🇳🇴🇳🇱🇸🇪🇧🇪🇪🇸🇩🇰🇵🇹🇫🇷🇮🇹🇬🇧🇦🇺🇩🇪🇹🇼🇭🇰🇮🇸🇨🇿🇷🇴🇮🇪🇨🇴🇰🇷🇯🇵]\s*([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?(\d+(?:\.\d+)?)%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)"
     for m in re.finditer(pattern, text):
@@ -270,7 +270,7 @@ def parse_rollup_text(text: str, post_url: str = None) -> List[TeslaSalesRecord]
             sales=sales,
             yoy_pct=yoy,
             source_post_url=post_url,
-            source_post_author="Tslachan/tslaming",
+            source_post_author=author,
             ingested_at=datetime.utcnow().isoformat(),
             raw_text=text,
         )
@@ -468,7 +468,7 @@ More Tesla vehicle sales in European and Asian countries were reported in May. D
         if rec:
             if insert_record(rec.to_dict()):
                 count += 1
-        for r in parse_rollup_text(text, url):
+        for r in parse_rollup_text(text, url, author):
             if insert_record(r.to_dict()):
                 count += 1
     print(f"Seeded/updated {count} records (including rollups).")
@@ -504,11 +504,11 @@ def main():
                 main_rec = parse_piloly_post(text, url, author)
                 if main_rec:
                     recs.append(main_rec)
-                rollups = parse_rollup_text(text, url)
+                rollups = parse_rollup_text(text, url, author)
                 recs.extend(rollups)
 
                 if not recs:
-                    st.warning("Fetched the post but couldn't extract any sales records. It may be a weekly Europe* summary or a different format.")
+                    st.warning("Fetched the post but couldn't extract any sales records. The format might be new or different. Please notify the dashboard admin (share the X post URL in Discord) so support can be added.")
                 else:
                     inserted = 0
                     countries_updated = []
