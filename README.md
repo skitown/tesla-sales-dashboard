@@ -17,7 +17,9 @@ HOW TO RUN (copy-paste these into Terminal, in the folder holding this project):
 
     # every time — activate and start the app (opens in your browser):
     source .venv/bin/activate
-    streamlit run app/dashboard.py
+    streamlit run tesla_sales_dashboard.py
+
+On Mac you can also double-click TeslaSalesDashboard.command (after first setup).
 
 To stop it: click the Terminal window and press Ctrl-C.
 
