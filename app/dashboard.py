@@ -17,7 +17,7 @@ Core features:
 
 HOW TO RUN:
     source .venv/bin/activate
-    streamlit run tesla_sales_dashboard.py
+    streamlit run app/dashboard.py
 
 See README.md for full setup and the sidebar "Ingest" section for adding new posts.
 """
@@ -36,6 +36,9 @@ from parsers.fetch_x import fetch_post_from_url, extract_post_id
 
 
 def main():
+
+
+    def main():
         st.set_page_config(page_title="Tesla Regional Sales", layout="wide", page_icon="🚗")
 
         st.title("🚗 Tesla Regional Sales Dashboard")
@@ -183,6 +186,7 @@ def main():
         """)
 
     st.caption("Prototype built to stop the manual copy-paste cycle. Extend the parser, add direct scrapers for CPCA / OFV / thedriven.io, or wire up a Discord bot next.")
+
 
 if __name__ == "__main__":
     main()
