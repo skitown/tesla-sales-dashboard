@@ -296,7 +296,7 @@ def fetch_post_from_url(url: str, timeout: float = 10.0) -> Dict[str, str]:
     try:
         resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True)
         if resp.status_code == 404:
-            return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Paste the text manually instead — it's the most reliable method."}
+            return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
