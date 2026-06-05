@@ -1,771 +1,527 @@
 """
-Tesla Regional Sales Dashboard (Single-File Consolidated Version)
-================================================================
+Tesla Regional Sales Dashboard
+==============================
 
-Mimics the Signal Lab workflow:
-- This file (tesla_sales_dashboard.py) on the Desktop is the one uploaded to GitHub.
-- tesla_sales_dashboard.py_bak is the previous version (for easy rollback).
-- All extras, old versions, split modules, experiments live in Desktop/tesla-sales-extras/
+Single-file Streamlit app to aggregate Tesla vehicle registrations & deliveries
+by country, from national registration agencies, CnEVPost (China weekly),
+and Tesla's investor relations quarterly releases.
 
-This is a self-contained single-file Streamlit app (like equity_trends.py for Signal Lab).
-All parser, storage, fetch, and UI logic is inlined here for simple GitHub uploads and Streamlit Cloud deploys.
+Replaces the earlier X-post-parsing prototype. No tweet scraping. Manual entry
+for agency monthly data (it's a 10-second paste from each release) and an
+automated scraper for CnEVPost weekly China insurance registrations.
 
-Run with:
-    source .venv/bin/activate
-    streamlit run tesla_sales_dashboard.py
+Install + run:
+    pip install streamlit pandas plotly
+    python3 -m streamlit run tesla_sales_dashboard.py
 
-Or on Mac, double-click a TeslaSalesDashboard.command (copy one from tesla-sales-extras/ if needed).
+Data lives in data/tesla_sales.db (SQLite). Add `data/` to .gitignore.
 
-See the tesla-sales-extras/ folder for the split-module versions, full project snapshot, docs, requirements, old UIs, etc.
-
-Current UI: Simple main-page "Paste X Post URL" + one "🚀 Fetch & Ingest" button.
-No sidebar for ingest, no manual text/author fields (clutter removed per user request).
-Auto-seeds demo data on first load if empty.
-
-Live public version: https://tesla-sales-dashboard.streamlit.app
+Schema notes:
+- One row per (country, period_start, period_type, metric, source). Period_type
+  is 'monthly', 'weekly', or 'quarterly'. Different metrics (registration,
+  insurance, wholesale, delivery) are NOT interchangeable -- the dashboard
+  keeps them separate.
+- For shared multi-user persistence (Streamlit Cloud), swap SQLite for an
+  external Postgres -- Neon's free tier works. Only the get_conn() function
+  needs to change.
 """
 
 from __future__ import annotations
 
-import sqlite3
 import re
-from dataclasses import dataclass, asdict
-from datetime import datetime
-from typing import Optional, Dict, Any, List
+import sqlite3
+import urllib.request
+from datetime import datetime, date, timedelta
 from pathlib import Path
+from typing import Optional
 
-import streamlit as st
 import pandas as pd
 import plotly.express as px
-import dateutil.parser as dateparser
-import httpx
-import time
+import streamlit as st
 
 
-# ----------------------------- TeslaSalesRecord -----------------------------
-@dataclass
-class TeslaSalesRecord:
-    country: str
-    year: int
-    month: int
-    period_label: str
-    sales: int
-    market_share_pct: Optional[float] = None
-    bev_penetration_pct: Optional[float] = None
-    tesla_of_bev_pct: Optional[float] = None
-    yoy_pct: Optional[float] = None
-    vs_prior_q2m_pct: Optional[float] = None   # vs second month of previous quarter
-    model_y_pct: Optional[float] = None
-    model_3_pct: Optional[float] = None
-    ytd_vs_last_ytd_pct: Optional[float] = None
-    ytd_fraction_of_prior_year: Optional[float] = None
-    notes: str = ""
-    records: List[str] = None
-    source_post_url: Optional[str] = None
-    source_post_author: Optional[str] = None
-    source_post_id: Optional[str] = None
-    data_source_type: str = "x_post"  # e.g. "cnevpost_insurance_tesla", "tesla_ir", "robbie_bev_context", "x_post", "seeded"
-    ingested_at: str = None
-    raw_text: str = ""
+# ---- Config ----
 
-    def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        if d.get("records") is None:
-            d["records"] = []
-        return d
-
-
-# ----------------------------- Extract / Parse logic (from parsers/extract.py) -----------------------------
-def _parse_percent(text: str) -> Optional[float]:
-    """Extract first percentage like +322% or 28.8% or 149 basis points."""
-    if not text:
-        return None
-    bp = re.search(r"(\d+(?:\.\d+)?)\s*basis points", text, re.I)
-    if bp:
-        return round(float(bp.group(1)) / 100, 2)
-    m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%", text)
-    if m:
-        return float(m.group(1))
-    return None
-
-
-def _parse_int(text: str) -> Optional[int]:
-    m = re.search(r"([\d,]+)", text)
-    if m:
-        return int(m.group(1).replace(",", ""))
-    return None
-
-
-def _extract_country_and_period(text: str) -> tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
-    # 1. Standard "Country reported N Tesla sales in Month"
-    m = re.search(
-        r"([A-Z][A-Za-z\s]+?)\s+reported\s+([\d,]+)\s+Tesla\s+sales.*?in\s+(January|February|March|April|May|June|July|August|September|October|November|December)",
-        text, re.I
-    )
-    if m:
-        country = m.group(1).strip()
-        sales = _parse_int(m.group(2))
-        month_name = m.group(3).capitalize()
-        year_match = re.search(r'\b(20\d{2})\b', text)
-        year = int(year_match.group(1)) if year_match else 2026
-        try:
-            dt = dateparser.parse(f"1 {month_name} {year}")
-            return country, dt.year, dt.month, f"{month_name} {dt.year}"
-        except Exception:
-            pass
-
-    # 2. Giga Shanghai
-    m = re.search(
-        r"(?:In|For)\s+(January|February|March|April|May|June|July|August|September|October|November|December).*?Giga Shanghai.*?(\d[\d,]+)",
-        text, re.I
-    )
-    if m:
-        month_name = m.group(1).capitalize()
-        sales = _parse_int(m.group(2))
-        year_match = re.search(r'\b(20\d{2})\b', text)
-        year = int(year_match.group(1)) if year_match else 2026
-        try:
-            dt = dateparser.parse(f"1 {month_name} {year}")
-            return "China (Giga Shanghai wholesale)", dt.year, dt.month, f"{month_name} {dt.year}"
-        except Exception:
-            pass
-
-    # 3. Strict rollup with flag
-    m = re.search(
-        r"[🇨🇳🇹🇷🇳🇴🇳🇱🇸🇪🇧🇪🇪🇸🇩🇰🇵🇹🇫🇷🇮🇹🇬🇧🇦🇺🇩🇪🇹🇼🇭🇰🇮🇸🇨🇿🇷🇴🇮🇪🇨🇴🇰🇷🇯🇵]\s*([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?\d+%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)",
-        text
-    )
-    if m and m.group(1):
-        country = m.group(1).strip()
-        month_name = m.group(2)
-        sales = _parse_int(m.group(3))
-        year_match = re.search(r'\b(20\d{2})\b', text)
-        year = int(year_match.group(1)) if year_match else 2026
-        try:
-            dt = dateparser.parse(f"1 {month_name} {year}")
-            return country, dt.year, dt.month, f"{month_name} {dt.year}"
-        except Exception:
-            pass
-
-    # 4. Loose country sales (for manual or variant posts)
-    m = re.search(
-        r"([A-Z][A-Za-z\s]+?)\s+(?:reported|has|sold|sales of)\s+([\d,]+)\s+Tesla",
-        text, re.I
-    )
-    if m:
-        country = m.group(1).strip()
-        sales = _parse_int(m.group(2))
-        # try to find month
-        month_match = re.search(r"in\s+(January|February|March|April|May|June|July|August|September|October|November|December)", text, re.I)
-        month_name = month_match.group(1).capitalize() if month_match else "Unknown"
-        year_match = re.search(r'\b(20\d{2})\b', text)
-        year = int(year_match.group(1)) if year_match else 2026
-        try:
-            dt = dateparser.parse(f"1 {month_name} {year}")
-            return country, dt.year, dt.month, f"{month_name} {dt.year}"
-        except Exception:
-            pass
-
-    return None, None, None, None
-
-
-def _extract_model_mix(text: str) -> tuple[Optional[float], Optional[float]]:
-    my = re.search(r"(\d+(?:\.\d+)?)\s*%\s*Model\s*Y", text, re.I)
-    m3 = re.search(r"(\d+(?:\.\d+)?)\s*%\s*Model\s*3", text, re.I)
-    return (float(my.group(1)) if my else None,
-            float(m3.group(1)) if m3 else None)
-
-
-def _extract_bullets(text: str) -> Dict[str, Any]:
-    out = {}
-    ms = re.search(r"(\d+(?:\.\d+)?)\s*%\s*market share", text, re.I)
-    if ms:
-        out["market_share_pct"] = float(ms.group(1))
-
-    bev = re.search(r"BEV penetration is\s*(\d+(?:\.\d+)?)\s*%", text, re.I)
-    if bev:
-        out["bev_penetration_pct"] = float(bev.group(1))
-
-    tesla_bev = re.search(r"Tesla has\s*(\d+(?:\.\d+)?)\s*%\s*of this segment", text, re.I)
-    if tesla_bev:
-        out["tesla_of_bev_pct"] = float(tesla_bev.group(1))
-
-    yoy = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%\s*vs\.\s*(?:May|same month|last year)", text, re.I)
-    if yoy:
-        out["yoy_pct"] = float(yoy.group(1))
-
-    q2 = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%\s*(?:compared to|vs\.)\s*(?:February|the second month)", text, re.I)
-    if q2:
-        out["vs_prior_q2m_pct"] = float(q2.group(1))
-
-    ytd = re.search(r"Year-to-date\s*([+-]?\d+(?:\.\d+)?)\s*%\s*over same period last year", text, re.I)
-    if ytd:
-        out["ytd_vs_last_ytd_pct"] = float(ytd.group(1))
-
-    frac = re.search(r"Year-to-date is\s*(\d+(?:\.\d+)?)\s*%\s*or\s*([\d.]+)/12", text, re.I)
-    if frac:
-        out["ytd_fraction_of_prior_year"] = float(frac.group(1))
-
-    my, m3 = _extract_model_mix(text)
-    out["model_y_pct"] = my
-    out["model_3_pct"] = m3
-
-    records = re.findall(r"(best .*? ever|second best .*? ever|highest .*? since .*?Q\d|record)", text, re.I)
-    out["records"] = list(dict.fromkeys(records))
-    return out
-
-
-def parse_piloly_post(text: str, post_url: str = None, author: str = "piloly", strict: bool = True) -> Optional[TeslaSalesRecord]:
-    if strict:
-        if "reported" not in text.lower() and "Giga Shanghai" not in text and "Sales in " not in text:
-            return None
-
-    country, year, month, period = _extract_country_and_period(text)
-    sales = _parse_sales_from_text(text)
-    if not sales:
-        sales_match = re.search(r"(\d[\d,]+)\s*(?:Tesla sales|vehicles|units|Model 3 and Model Y)", text, re.I)
-        sales = _parse_int(sales_match.group(1)) if sales_match else None
-
-    if not country or sales is None:
-        return None
-
-    if not year or not month:
-        year, month = 2026, 5
-
-    bullets = _extract_bullets(text)
-
-    rec = TeslaSalesRecord(
-        country=country,
-        year=year,
-        month=month,
-        period_label=period or f"{month:02d}/{year}",
-        sales=sales,
-        market_share_pct=bullets.get("market_share_pct"),
-        bev_penetration_pct=bullets.get("bev_penetration_pct"),
-        tesla_of_bev_pct=bullets.get("tesla_of_bev_pct"),
-        yoy_pct=bullets.get("yoy_pct"),
-        vs_prior_q2m_pct=bullets.get("vs_prior_q2m_pct"),
-        model_y_pct=bullets.get("model_y_pct"),
-        model_3_pct=bullets.get("model_3_pct"),
-        ytd_vs_last_ytd_pct=bullets.get("ytd_vs_last_ytd_pct"),
-        ytd_fraction_of_prior_year=bullets.get("ytd_fraction_of_prior_year"),
-        notes=text[:500] + "..." if len(text) > 500 else text,
-        records=bullets.get("records", []),
-        source_post_url=post_url,
-        source_post_author=author,
-        source_post_id=post_url.split("/")[-1] if post_url else None,
-        ingested_at=datetime.utcnow().isoformat(),
-        raw_text=text,
-    )
-    return rec
-
-
-def _parse_sales_from_text(text: str) -> Optional[int]:
-    patterns = [
-        r"reported\s+([\d,]+)\s+Tesla",
-        r"(\d[\d,]+)\s*(?:Tesla sales|vehicles|units|Model 3 and Model Y|sales)",
-        r"Sales in [A-Z][a-z]+:\s*([\d,]+)",
-        r"(\d[\d,]+)\s*deliveries",
-        r"(\d[\d,]+)\s*(?:Tesla|sales|vehicles)",
-        r":\s*([\d,]+)\s*(?:Tesla|sales)",
-    ]
-    for p in patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            return _parse_int(m.group(1))
-    return None
-
-
-def parse_rollup_text(text: str, post_url: str = None, author: str = "Tslachan/tslaming") -> List[TeslaSalesRecord]:
-    records = []
-    # Strict with flag
-    pattern = r"[🇨🇳🇹🇷🇳🇴🇳🇱🇸🇪🇧🇪🇪🇸🇩🇰🇵🇹🇫🇷🇮🇹🇬🇧🇦🇺🇩🇪🇹🇼🇭🇰🇮🇸🇨🇿🇷🇴🇮🇪🇨🇴🇰🇷🇯🇵]\s*([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?(\d+(?:\.\d+)?)%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)"
-    for m in re.finditer(pattern, text):
-        country = m.group(1).strip()
-        try:
-            yoy = float(m.group(2))
-        except Exception:
-            yoy = None
-        month_name = m.group(3)
-        sales = _parse_int(m.group(4))
-        year_match = re.search(r'\b(20\d{2})\b', text)
-        year = int(year_match.group(1)) if year_match else 2026
-        try:
-            dt = dateparser.parse(f"1 {month_name} {year}")
-            year, month = dt.year, dt.month
-        except Exception:
-            year, month = 2026, 5
-
-        if sales is None:
-            continue
-        rec = TeslaSalesRecord(
-            country=country,
-            year=year,
-            month=month,
-            period_label=f"{month_name} {year}",
-            sales=sales,
-            yoy_pct=yoy,
-            source_post_url=post_url,
-            source_post_author=author,
-            ingested_at=datetime.utcnow().isoformat(),
-            raw_text=text,
-        )
-        records.append(rec)
-
-    # Loose rollup without flag (for manual pastes)
-    loose = r"([A-Za-z][A-Za-z\s]+?)\s*:\s*[+-]?(\d+(?:\.\d+)?)%\s*\(Sales in (January|February|March|April|May|June|July|August|September|October|November|December):\s*([\d,]+)\)"
-    for m in re.finditer(loose, text, re.I):
-        country = m.group(1).strip()
-        try:
-            yoy = float(m.group(2))
-        except Exception:
-            yoy = None
-        month_name = m.group(3)
-        sales = _parse_int(m.group(4))
-        year_match = re.search(r'\b(20\d{2})\b', text)
-        year = int(year_match.group(1)) if year_match else 2026
-        try:
-            dt = dateparser.parse(f"1 {month_name} {year}")
-            year, month = dt.year, dt.month
-        except Exception:
-            year, month = 2026, 5
-
-        if sales is None:
-            continue
-        # avoid dups
-        if any(r.country.lower() == country.lower() and r.sales == sales for r in records):
-            continue
-        rec = TeslaSalesRecord(
-            country=country,
-            year=year,
-            month=month,
-            period_label=f"{month_name} {year}",
-            sales=sales,
-            yoy_pct=yoy,
-            source_post_url=post_url,
-            source_post_author=author,
-            ingested_at=datetime.utcnow().isoformat(),
-            raw_text=text,
-        )
-        records.append(rec)
-    return records
-
-
-# ----------------------------- Fetch X logic (from parsers/fetch_x.py) -----------------------------
-def extract_post_id(url: str) -> Optional[str]:
-    if not url:
-        return None
-    m = re.search(r"/status/(\d+)", url)
-    return m.group(1) if m else None
-
-
-def fetch_post_from_url(url: str, timeout: float = 10.0) -> Dict[str, str]:
-    post_id = extract_post_id(url)
-    if not post_id:
-        return {"error": "Could not extract post ID from URL. Use a link like https://x.com/piloly/status/1234567890"}
-
-    @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
-    def _fetch_tweet(pid: str) -> dict:
-        syndication_url = f"https://cdn.syndication.twimg.com/tweet?id={pid}&lang=en"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        for attempt in range(4):  # more aggressive retries
-            try:
-                resp = httpx.get(syndication_url, timeout=timeout, follow_redirects=True, headers=headers)
-                if resp.status_code == 404:
-                    return {"error": "Post not found via public endpoint (it may be very new, deleted, protected, or the syndication cache hasn't updated yet). Try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
-                if resp.status_code == 429:
-                    if attempt < 3:
-                        time.sleep(5 * (attempt + 1))  # longer backoff: 5s, 10s, 15s
-                        continue
-                    # Raise so we don't cache the 429 error (important for repeated failures)
-                    raise RuntimeError("429_from_x")
-                resp.raise_for_status()
-                return resp.json()
-            except RuntimeError as e:
-                if "429_from_x" in str(e):
-                    return {"error": "X's public syndication endpoint is currently returning 429 rate limits for most requests (this is common even for individual posts from cloud services like Streamlit). It may not be specific to this post. Please wait a minute and try again, or notify the dashboard admin with the post link."}
-                raise
-            except Exception as e:
-                if attempt < 3:
-                    time.sleep(2)
-                    continue
-                return {"error": f"Network error fetching post: {e}. Please try again in a minute, or notify the dashboard admin with the post link if it keeps failing."}
-        return {"error": "Failed to fetch tweet after retries."}
-
-    data = _fetch_tweet(post_id)
-
-    if "error" in data:
-        return data
-
-    text = (data.get("text") or "").strip()
-    user = data.get("user", {}) or {}
-    author = (user.get("screen_name") or user.get("name") or "").strip()
-
-    if not text:
-        return {"error": "Could not extract text from the post. Please notify the dashboard admin with the post link."}
-
-    return {
-        "text": text,
-        "author": author,
-        "post_id": post_id,
-    }
-
-
-# ----------------------------- Storage (from app/storage.py, adjusted for single-file) -----------------------------
 DB_PATH = Path(__file__).parent / "data" / "tesla_sales.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+ROBBIE_ANDREW_PAGE = "https://robbieandrew.github.io/carsales/"
+CNEVPOST_TAG_URL = "https://cnevpost.com/tag/insurance-registrations/"
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) tesla-sales-dashboard/0.1"
 
-def get_conn():
+
+# ---- Seed data ----
+# Curated from agency releases reported in May-June 2026. Replace/extend by
+# pasting from KBA, OFV, SMMT, PFA, Mobility Sweden, bilstatistik.dk, etc.
+
+SEED_DATA = [
+    # Germany (KBA)
+    {"country": "Germany", "region": "Europe", "period_start": "2026-05-01",
+     "period_type": "monthly", "metric": "registration", "units": 5111,
+     "source": "KBA", "source_url": "https://www.kba.de",
+     "notes": "+322% YoY"},
+    {"country": "Germany", "region": "Europe", "period_start": "2026-03-01",
+     "period_type": "monthly", "metric": "registration", "units": 9252,
+     "source": "KBA", "source_url": "https://www.kba.de",
+     "notes": "Best-ever March in Germany; +315% YoY"},
+
+    # France (PFA)
+    {"country": "France", "region": "Europe", "period_start": "2026-05-01",
+     "period_type": "monthly", "metric": "registration", "units": 5446,
+     "source": "PFA", "source_url": "https://pfa-auto.fr",
+     "notes": "+655% YoY; best May ever in France"},
+    {"country": "France", "region": "Europe", "period_start": "2026-03-01",
+     "period_type": "monthly", "metric": "registration", "units": 9569,
+     "source": "PFA", "source_url": "https://pfa-auto.fr",
+     "notes": "+203% YoY; near all-time monthly record"},
+
+    # Norway (OFV)
+    {"country": "Norway", "region": "Europe", "period_start": "2026-05-01",
+     "period_type": "monthly", "metric": "registration", "units": 3345,
+     "source": "OFV", "source_url": "https://ofv.no",
+     "notes": "+29% YoY; 21.5% market share"},
+    {"country": "Norway", "region": "Europe", "period_start": "2026-03-01",
+     "period_type": "monthly", "metric": "registration", "units": 6150,
+     "source": "OFV", "source_url": "https://ofv.no",
+     "notes": "+178% YoY"},
+
+    # Sweden (Mobility Sweden)
+    {"country": "Sweden", "region": "Europe", "period_start": "2026-05-01",
+     "period_type": "monthly", "metric": "registration", "units": 858,
+     "source": "Mobility Sweden", "source_url": "https://mobilitysweden.se",
+     "notes": "+71% YoY"},
+    {"country": "Sweden", "region": "Europe", "period_start": "2026-03-01",
+     "period_type": "monthly", "metric": "registration", "units": 1447,
+     "source": "Mobility Sweden", "source_url": "https://mobilitysweden.se",
+     "notes": "+144% YoY"},
+
+    # Denmark (bilstatistik.dk)
+    {"country": "Denmark", "region": "Europe", "period_start": "2026-05-01",
+     "period_type": "monthly", "metric": "registration", "units": 1750,
+     "source": "bilstatistik.dk", "source_url": "https://bilstatistik.dk",
+     "notes": "+136% YoY; Model Y top-selling vehicle"},
+    {"country": "Denmark", "region": "Europe", "period_start": "2026-03-01",
+     "period_type": "monthly", "metric": "registration", "units": 1784,
+     "source": "bilstatistik.dk", "source_url": "https://bilstatistik.dk",
+     "notes": "+96% YoY"},
+
+    # UK (SMMT)
+    {"country": "UK", "region": "Europe", "period_start": "2026-03-01",
+     "period_type": "monthly", "metric": "registration", "units": 8599,
+     "source": "SMMT", "source_url": "https://www.smmt.co.uk",
+     "notes": "+20% YoY; 5,177 Model Y"},
+
+    # China weekly seed (CnEVPost; will be extended by the scraper)
+    {"country": "China", "region": "China", "period_start": "2025-09-08",
+     "period_type": "weekly", "metric": "insurance", "units": 15350,
+     "source": "CnEVPost", "source_url": "https://cnevpost.com",
+     "notes": "Week ending Sept 14, 2025"},
+    {"country": "China", "region": "China", "period_start": "2025-09-15",
+     "period_type": "weekly", "metric": "insurance", "units": 17300,
+     "source": "CnEVPost", "source_url": "https://cnevpost.com",
+     "notes": "Week ending Sept 21, 2025; 12-week high"},
+]
+
+
+# ---- DB layer ----
+
+def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS monthly_sales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        country TEXT NOT NULL,
-        year INTEGER NOT NULL,
-        month INTEGER NOT NULL,
-        period_label TEXT,
-        sales INTEGER NOT NULL,
-        market_share_pct REAL,
-        bev_penetration_pct REAL,
-        tesla_of_bev_pct REAL,
-        yoy_pct REAL,
-        vs_prior_q2m_pct REAL,
-        model_y_pct REAL,
-        model_3_pct REAL,
-        ytd_vs_last_ytd_pct REAL,
-        ytd_fraction_of_prior_year REAL,
-        notes TEXT,
-        records TEXT,
-        source_post_url TEXT,
-        source_post_author TEXT,
-        source_post_id TEXT,
-        data_source_type TEXT,
-        ingested_at TEXT,
-        raw_text TEXT,
-        UNIQUE(country, year, month)
-    )
-    """)
-    c.execute("CREATE INDEX IF NOT EXISTS idx_country_month ON monthly_sales(country, year, month)")
-    # Add column for new public sources if DB is old (safe no-op if exists)
-    try:
-        c.execute("ALTER TABLE monthly_sales ADD COLUMN data_source_type TEXT")
-    except Exception:
-        pass  # column already exists
-    conn.commit()
-    conn.close()
-
-
-def insert_record(rec: Dict[str, Any]) -> bool:
-    init_db()
-    conn = get_conn()
-    c = conn.cursor()
-    records_str = "|".join(rec.get("records", [])) if rec.get("records") else ""
-    try:
-        c.execute("""
-            INSERT OR REPLACE INTO monthly_sales
-            (country, year, month, period_label, sales, market_share_pct, bev_penetration_pct,
-             tesla_of_bev_pct, yoy_pct, vs_prior_q2m_pct, model_y_pct, model_3_pct,
-             ytd_vs_last_ytd_pct, ytd_fraction_of_prior_year, notes, records,
-             source_post_url, source_post_author, source_post_id, data_source_type, ingested_at, raw_text)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            rec["country"], rec["year"], rec["month"], rec.get("period_label"),
-            rec["sales"], rec.get("market_share_pct"), rec.get("bev_penetration_pct"),
-            rec.get("tesla_of_bev_pct"), rec.get("yoy_pct"), rec.get("vs_prior_q2m_pct"),
-            rec.get("model_y_pct"), rec.get("model_3_pct"),
-            rec.get("ytd_vs_last_ytd_pct"), rec.get("ytd_fraction_of_prior_year"),
-            rec.get("notes", ""), records_str,
-            rec.get("source_post_url"), rec.get("source_post_author"),
-            rec.get("source_post_id"), rec.get("data_source_type", "x_post"),
-            rec.get("ingested_at") or datetime.utcnow().isoformat(),
-            rec.get("raw_text", "")
-        ))
+def init_db() -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tesla_sales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL,
+                region TEXT,
+                period_start TEXT NOT NULL,
+                period_type TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                units INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                source_url TEXT,
+                notes TEXT,
+                ingested_at TEXT NOT NULL,
+                UNIQUE(country, period_start, period_type, metric, source)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_country_period "
+            "ON tesla_sales(country, period_start)"
+        )
         conn.commit()
+
+
+def upsert(rec: dict) -> bool:
+    rec = {**rec, "ingested_at": datetime.utcnow().isoformat()}
+    try:
+        with get_conn() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO tesla_sales
+                (country, region, period_start, period_type, metric, units,
+                 source, source_url, notes, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                rec["country"], rec.get("region"), rec["period_start"],
+                rec["period_type"], rec["metric"], int(rec["units"]),
+                rec["source"], rec.get("source_url"), rec.get("notes", ""),
+                rec["ingested_at"],
+            ))
+            conn.commit()
         return True
     except Exception as e:
-        print("Insert error:", e)
+        st.error(f"Insert error: {e}")
         return False
-    finally:
-        conn.close()
 
 
 def load_df() -> pd.DataFrame:
-    init_db()
-    conn = get_conn()
-    df = pd.read_sql_query("SELECT * FROM monthly_sales ORDER BY year DESC, month DESC, country", conn)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql_query(
+            "SELECT * FROM tesla_sales ORDER BY period_start DESC, country",
+            conn,
+        )
     if not df.empty:
-        df["date"] = pd.to_datetime(df["year"].astype(str) + "-" + df["month"].astype(str) + "-01")
+        df["period_start"] = pd.to_datetime(df["period_start"])
     return df
 
 
-def get_latest_by_country() -> pd.DataFrame:
-    df = load_df()
-    if df.empty:
-        return df
-    df = df.sort_values(["country", "year", "month"], ascending=[True, False, False])
-    return df.groupby("country", as_index=False).first()
+def seed_if_empty() -> None:
+    with get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM tesla_sales").fetchone()[0]
+    if n == 0:
+        for rec in SEED_DATA:
+            upsert(rec)
 
 
-def clear_all_data():
-    """Delete every row from the monthly_sales table. Use for testing/manual ingest."""
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM monthly_sales")
-    conn.commit()
-    conn.close()
+# ---- CnEVPost scraper ----
 
-
-# ----------------------------- Public data ingest (Tesla brand ONLY) -----------------------------
-# Robbie: used for BEV *totals* context / shares only. NEVER insert as Tesla sales.
-# CnEVPost: Tesla-specific China weekly insurance (retail proxy).
-# Tesla IR: global quarterly deliveries (ground truth).
-
-def fetch_robbie_bev_total(country: str, year: int, month: int) -> Optional[int]:
-    """Fetch BEV total from Robbie for share calc (not Tesla sales). Returns None if not available."""
-    try:
-        import pandas as pd
-        url = "https://robbieandrew.github.io/carsales/data/all_carsales_monthly.csv"
-        df = pd.read_csv(url)
-        yyyymm = int(f"{year}{month:02d}")
-        row = df[(df["YYYYMM"] == yyyymm) & (df["Fuel"] == "BatteryElectric") & (df["Country"].str.contains(country, case=False, na=False))]
-        if not row.empty:
-            return int(row.iloc[0]["Value"])
-    except Exception:
-        pass
+def _parse_week_ending(url: str, html: str, pub_date: date) -> Optional[date]:
+    """Extract the week-ending date. URL slug is the most reliable signal."""
+    # URL: .../china-ev-insurance-registrations-week-ending-sept-14-2025/
+    m = re.search(r"week-ending-([a-z]+)-(\d{1,2})-(\d{4})", url, re.I)
+    if m:
+        try:
+            return datetime.strptime(
+                f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}", "%b %d %Y"
+            ).date()
+        except ValueError:
+            pass
+    # Title/body fallback: "week ending Sept 14"
+    m = re.search(r"week ending\s+([A-Za-z]+)\s+(\d{1,2})", html, re.I)
+    if m:
+        try:
+            return datetime.strptime(
+                f"{m.group(1)[:3]} {m.group(2)} {pub_date.year}", "%b %d %Y"
+            ).date()
+        except ValueError:
+            pass
     return None
 
-def fetch_cnevpost_tesla_recent(limit: int = 1) -> list:
-    """Scrape the latest China Tesla insurance registrations (brand only) from CnEVPost tag page.
-    Returns list of dicts for insert. Uses most recent post(s) with Tesla numbers.
-    """
-    import re
-    import urllib.request
-    tag_url = "https://cnevpost.com/tag/insurance-registrations/"
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; TeslaDashboardBot/1.0)"}
-    records = []
+
+def _extract_tesla_units(html: str) -> Optional[int]:
+    """Find the weekly Tesla insurance number. Title first, then body."""
+    title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
+    title = title_m.group(1) if title_m else ""
+    # Title pattern is consistent: "...insurance registrations for week ending
+    # Sept 21: Nio Inc 6,670, Tesla 17,300, Xiaomi 10,800..." Only trust
+    # the title number when the title is clearly about insurance registrations.
+    m = None
+    if re.search(r"insurance registrations", title, re.I):
+        m = re.search(r"Tesla\s+(\d{1,3}(?:,\d{3})+|\d{4,5})", title)
+    if not m:
+        # Body fallback, anchored by an action verb to avoid false positives
+        m = re.search(
+            r"Tesla(?:\s*\([^)]+\))?\s+(?:had|recorded|reached|saw|posted)\s+"
+            r"(\d{1,3}(?:,\d{3})+|\d{4,5})\s+(?:insurance|new|vehicle)",
+            html,
+        )
+    if not m:
+        return None
     try:
-        req = urllib.request.Request(tag_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-        # Find recent posts containing Tesla in the link text
-        pattern = r'<a[^>]+href="(/20\d{2}/\d{2}/\d{2}/[^"]+)"[^>]*>([^<]*Tesla[^<]*)</a>'
-        matches = re.findall(pattern, html, re.IGNORECASE)
-        for path, title in matches[:limit]:
-            url = "https://cnevpost.com" + path
-            try:
-                req2 = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req2, timeout=15) as resp2:
-                    post_html = resp2.read().decode("utf-8", errors="replace")
-                sales = None
-                m = re.search(r"Tesla\s+([\d,]+)", title, re.I)
-                if m:
-                    sales = int(m.group(1).replace(",", ""))
-                if not sales:
-                    m = re.search(r"Tesla\s+([\d,]+)", post_html, re.I)
-                    if m:
-                        sales = int(m.group(1).replace(",", ""))
-                if sales:
-                    week = None
-                    m = re.search(r"week ending ([^<]+)", title, re.I)
-                    if m:
-                        week = m.group(1).strip()
-                    # Use current context for period; in prod parse date from title/URL
-                    year = 2026
-                    month = 6  # adjust based on actual post date
-                    records.append({
-                        "country": "China",
-                        "year": year,
-                        "month": month,
-                        "period_label": f"week ending {week}" if week else "recent",
-                        "sales": sales,
-                        "data_source_type": "cnevpost_insurance_tesla",
-                        "source_post_url": url,
-                        "notes": f"China insurance registrations (Tesla brand only) via CnEVPost. {title[:80]}"
-                    })
-            except Exception:
-                continue
+        units = int(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    # Sanity: Tesla weekly China is roughly 5k-25k. Bound loosely.
+    if 1000 <= units <= 100_000:
+        return units
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_cnevpost(limit: int = 10) -> list[dict]:
+    """Scrape the CnEVPost insurance-registrations tag page for recent
+    weekly posts. Returns a list of upsertable record dicts."""
+    try:
+        req = urllib.request.Request(CNEVPOST_TAG_URL, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            index_html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
-        print("CnEVPost scrape failed:", e)
+        st.warning(f"CnEVPost index fetch failed: {e}")
+        return []
+
+    url_pat = (
+        r'href="(https://cnevpost\.com/(\d{4})/(\d{2})/(\d{2})/'
+        r'[^"]*insurance-registrations[^"]*)"'
+    )
+    seen, posts = set(), []
+    for m in re.finditer(url_pat, index_html):
+        url = m.group(1)
+        if url in seen:
+            continue
+        seen.add(url)
+        posts.append({
+            "url": url,
+            "pub_date": date(int(m.group(2)), int(m.group(3)), int(m.group(4))),
+        })
+        if len(posts) >= limit:
+            break
+
+    records = []
+    for p in posts:
+        try:
+            req = urllib.request.Request(p["url"], headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                post_html = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+
+        week_end = _parse_week_ending(p["url"], post_html, p["pub_date"])
+        units = _extract_tesla_units(post_html)
+        if not week_end or not units:
+            continue
+
+        period_start = week_end - timedelta(days=6)
+        records.append({
+            "country": "China",
+            "region": "China",
+            "period_start": period_start.isoformat(),
+            "period_type": "weekly",
+            "metric": "insurance",
+            "units": units,
+            "source": "CnEVPost",
+            "source_url": p["url"],
+            "notes": f"Week ending {week_end.isoformat()}",
+        })
+
     return records
 
-def fetch_tesla_ir_quarterly() -> list:
-    """Stub for Tesla IR quarterly deliveries (Tesla brand global, includes China). Hardcode recent for now; parse ir.tesla.com later."""
-    # Example from known Q1 2026 etc. In prod parse the press releases.
-    return [{
-        "country": "Global (Tesla deliveries, incl. China)",
-        "year": 2026,
-        "month": 3,  # Q1 end
-        "period_label": "Q1 2026",
-        "sales": 358023,  # example; replace with real
-        "data_source_type": "tesla_ir_quarterly",
-        "source_post_url": "https://ir.tesla.com/",
-        "notes": "Tesla reported global deliveries (quarterly ground truth / reconciliation). This number INCLUDES China. Different metric and cadence from CnEVPost China weekly insurance proxy."
-    }]
 
-def pull_public_tesla_data() -> list:
-    """Pull Tesla-brand only records from public sources. Returns list of rec dicts for insert.
-    Note: CnEVPost China and Tesla IR Global are DIFFERENT series.
-    Global deliveries already include China. They are not meant to be added together.
-    """
-    recs = []
-    # China Tesla from CnEVPost (high cadence, brand specific, insurance proxy)
-    recs.extend(fetch_cnevpost_tesla_recent(2))
-    # Global Tesla from IR (quarterly, includes China, official delivered vehicles)
-    recs.extend(fetch_tesla_ir_quarterly())
-    # Note: Robbie BEV totals are for context/shares only (see fetch_robbie_bev_total). Not added as sales.
-    return recs
+# ---- UI ----
 
-# ----------------------------- Main UI (simplified, from app/dashboard.py) -----------------------------
-def main():
-    st.set_page_config(page_title="Tesla Regional Sales", layout="wide", page_icon="🚗")
-
-    # Green theme for the main action (URL field + ingest button). Red = stop.
-    st.markdown("""
-    <style>
-    /* Green border for the main URL input field */
-    div[data-testid="stTextInput"] input {
-        border: 2px solid #00C853 !important;
-        border-radius: 6px !important;
-    }
-
-    /* Green primary button for "Fetch & Ingest" */
-    div[data-testid="stButton"] button[kind="primary"] {
-        background-color: #00C853 !important;
-        color: white !important;
-        border: 2px solid #00C853 !important;
-        border-radius: 6px !important;
-        font-weight: 600 !important;
-    }
-
-    div[data-testid="stButton"] button[kind="primary"]:hover {
-        background-color: #00A040 !important;
-        border-color: #00A040 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Temporary flag for clean screenshot (set to False after you get the shot)
-    hide_for_screenshot = False  # public sources UI enabled
-
-    st.title("🚗 Tesla Regional Sales Dashboard")
-    st.caption("Tesla brand sales from public sources (CnEVPost weekly China, Tesla IR quarterly, Robbie for BEV context). Only Tesla — no other OEM EV data. Old X data purged.")
-
-    # Clean any leftover old X/demo data (one-time per session)
-    if "old_x_data_cleared" not in st.session_state:
-        clear_all_data()
-        st.session_state["old_x_data_cleared"] = True
-
-    # === Public sources (Tesla brand ONLY) - main ingest now ===
-    st.markdown("---")
-    st.markdown("### Update from public sources (Tesla brand only)")
-    st.caption("CnEVPost = China-specific weekly insurance registrations (Tesla brand proxy). Tesla IR = Official quarterly global deliveries (INCLUDES China). These are different series/metrics — do not add them together. Robbie BEV totals for share context only.")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🔄 Pull China (CnEVPost) + Global Deliveries (Tesla IR)", type="primary", key="public_pull"):
-            with st.spinner("Fetching public Tesla brand data..."):
-                new_recs = pull_public_tesla_data()
-                inserted = 0
-                countries = []
-                for r in new_recs:
-                    if insert_record(r):
-                        inserted += 1
-                        countries.append(r.get("country", "?"))
-                if inserted:
-                    st.success(f"✅ Inserted/updated {inserted} Tesla-only records: {', '.join(set(countries))}")
-                    st.session_state["data_cleared"] = False
-                    st.rerun()
-                else:
-                    st.info("No new Tesla brand records (or already up to date).")
-    with col2:
-        if st.button("Fetch Robbie BEV total (context for shares, e.g. Australia May)", key="robbie_context"):
-            total = fetch_robbie_bev_total("Australia", 2026, 5)
-            st.write(f"Australia May 2026 BEV total (all brands, for share calc): {total:,}" if total else "Not available in current CSV pull.")
-            st.caption("This is used in UI for context only. Tesla sales remain separate.")
-
-    # Load data
-    init_db()
-    df = load_df()
-
-    if df.empty:
-        st.warning("No data loaded yet. Use the public sources button above to pull fresh Tesla data.")
-
-    # Testing tool hidden for live view (uncomment if needed for testing)
-    # if not hide_for_screenshot:
-    #     with st.expander("⚠️ Testing: Purge / Load demo data"):
-    #         ...
-
-    tab_latest, tab_trends, tab_all, tab_sources = st.tabs(["📊 Latest by Country", "📈 Trends & Charts", "All Data", "Sources & Help"])
-
-    with tab_latest:
-        st.subheader("Most recent month per country")
-        latest = get_latest_by_country()
-        cols = ["country", "period_label", "sales", "yoy_pct", "market_share_pct", "bev_penetration_pct", "tesla_of_bev_pct", "source_post_author", "source_post_url", "data_source_type"]
-        display = latest[[c for c in cols if c in latest.columns]].copy()
-        st.dataframe(display, width="stretch", hide_index=True)
-
-        # Quarterly Tesla brand summary - focus on THIS quarter (Global is the summed official total for the quarter)
-        # Country table above is for detail/breakdown (e.g. latest China proxy)
-        st.subheader("Quarterly Tesla Brand (Global official)")
-        global_rows = latest[latest["country"].str.contains("Global", case=False, na=False)]
-        if not global_rows.empty:
-            g = global_rows.iloc[0]
-            st.metric("This Quarter (Global deliveries, incl. China)", f"{int(g['sales']):,}", g.get("period_label", "latest"))
+def _sidebar_refresh() -> None:
+    st.header("Refresh")
+    if st.button("Pull latest from CnEVPost", use_container_width=True):
+        with st.spinner("Scraping CnEVPost..."):
+            new = fetch_cnevpost(limit=10)
+        n = sum(1 for r in new if upsert(r))
+        if n:
+            st.success(f"Inserted/updated {n} weekly records")
+            st.cache_data.clear()
+            st.rerun()
         else:
-            st.info("Use the public sources pull button above to load current quarter data.")
-        # Previous quarter for comparison only (hardcoded placeholder - replace with real prior quarter number when available)
-        st.metric("Previous Quarter (for comparison)", "418,227 (example)", "update with actual")
+            st.info("No new records (already current, or parser couldn't match the page).")
 
-    with tab_trends:
-        st.subheader("Sales over time (select countries)")
-        countries = sorted(df["country"].unique().tolist())
-        selected = st.multiselect("Countries", countries, default=countries[:6] if len(countries) > 6 else countries)
 
-        if selected:
-            sub = df[df["country"].isin(selected)].sort_values("date")
-            fig = px.line(sub, x="date", y="sales", color="country", markers=True,
-                          title="Tesla Sales by Country (monthly)")
-            fig.update_layout(height=450)
-            st.plotly_chart(fig, width="stretch")
+def _sidebar_manual_entry() -> None:
+    st.divider()
+    st.header("Add monthly figure")
+    st.caption("For monthly releases from KBA, OFV, SMMT, PFA, etc.")
+    with st.form("manual_add", clear_on_submit=True):
+        country = st.text_input("Country", placeholder="Germany")
+        region = st.selectbox(
+            "Region",
+            ["Europe", "China", "US", "Asia ex-China", "Global", "Other"],
+        )
+        period = st.date_input(
+            "Period start (1st of month for monthly)",
+            value=date.today().replace(day=1),
+        )
+        period_type = st.selectbox("Period type", ["monthly", "weekly", "quarterly"])
+        metric = st.selectbox(
+            "Metric", ["registration", "insurance", "wholesale", "delivery"]
+        )
+        units = st.number_input("Units", min_value=0, step=1)
+        source = st.text_input("Source", placeholder="KBA")
+        source_url = st.text_input("Source URL (optional)")
+        notes = st.text_input("Notes (optional)")
+        submitted = st.form_submit_button("Add", use_container_width=True)
+        if submitted and country and units > 0 and source:
+            ok = upsert({
+                "country": country.strip(),
+                "region": region,
+                "period_start": period.isoformat(),
+                "period_type": period_type,
+                "metric": metric,
+                "units": int(units),
+                "source": source.strip(),
+                "source_url": source_url.strip() or None,
+                "notes": notes.strip(),
+            })
+            if ok:
+                st.success(f"Added {country} {period} {int(units):,}")
+                st.rerun()
 
-            if "yoy_pct" in df.columns:
-                sub2 = sub.dropna(subset=["yoy_pct"])
-                if not sub2.empty:
-                    fig2 = px.bar(sub2, x="date", y="yoy_pct", color="country", barmode="group",
-                                  title="YoY % change (where reported)")
-                    st.plotly_chart(fig2, width="stretch")
 
-        st.markdown("**Notes**: China numbers are Giga Shanghai wholesale (includes exports). Europe coverage is often partial (fast-reporting countries). Always check the source links for full context and charts.")
+def _tab_latest(df: pd.DataFrame) -> None:
+    st.subheader("Most recent record per country / metric")
+    if df.empty:
+        st.info("No data loaded.")
+        return
+    latest = (
+        df.sort_values("period_start", ascending=False)
+          .drop_duplicates(subset=["country", "metric"], keep="first")
+    )
+    st.dataframe(
+        latest[["country", "region", "period_start", "period_type",
+                "metric", "units", "source", "notes"]],
+        use_container_width=True, hide_index=True,
+        column_config={
+            "period_start": st.column_config.DateColumn("Period start"),
+            "units": st.column_config.NumberColumn("Units", format="%d"),
+        },
+    )
 
-    with tab_all:
-        st.subheader("Full table (all ingested months)")
-        st.dataframe(df[["country", "period_label", "sales", "yoy_pct", "market_share_pct", "source_post_url"]],
-                     width="stretch", hide_index=True)
 
+def _tab_monthly(df: pd.DataFrame) -> None:
+    st.subheader("Monthly registrations by country")
+    monthly = df[(df["period_type"] == "monthly") &
+                 (df["metric"] == "registration")]
+    if monthly.empty:
+        st.info("No monthly registration data yet. Add some via the sidebar.")
+        return
+    countries = sorted(monthly["country"].unique())
+    default = countries[: min(6, len(countries))]
+    chosen = st.multiselect("Countries", countries, default=default)
+    sub = monthly[monthly["country"].isin(chosen)].sort_values("period_start")
+    if sub.empty:
+        return
+    fig = px.line(
+        sub, x="period_start", y="units", color="country", markers=True,
+        title="Tesla monthly registrations (national agencies)",
+    )
+    fig.update_layout(
+        height=480, hovermode="x unified",
+        yaxis_title="Units", xaxis_title="",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _tab_china(df: pd.DataFrame) -> None:
+    st.subheader("China weekly insurance registrations (CnEVPost)")
+    weekly = df[(df["country"] == "China") & (df["period_type"] == "weekly")]
+    if weekly.empty:
+        st.info(
+            "No weekly China data yet. Click 'Pull latest from CnEVPost' "
+            "in the sidebar."
+        )
+        return
+    weekly = weekly.sort_values("period_start").copy()
+    weekly["rolling_4w"] = weekly["units"].rolling(4).mean()
+    fig = px.bar(
+        weekly, x="period_start", y="units",
+        title="Tesla weekly insurance registrations in China",
+    )
+    fig.add_scatter(
+        x=weekly["period_start"], y=weekly["rolling_4w"],
+        mode="lines", name="4-week avg", line=dict(width=3),
+    )
+    fig.update_layout(
+        height=480, yaxis_title="Units", xaxis_title="", showlegend=True,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        weekly[["period_start", "units", "notes", "source_url"]]
+            .sort_values("period_start", ascending=False),
+        use_container_width=True, hide_index=True,
+    )
+
+
+def _tab_all(df: pd.DataFrame) -> None:
+    st.subheader("All ingested data")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    if not df.empty:
         csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("Download CSV", csv, "tesla_regional_sales.csv", "text/csv")
+        st.download_button(
+            "Download CSV", csv, "tesla_sales.csv", "text/csv"
+        )
 
-    with tab_sources:
-        st.markdown("See the full list of underlying public sources:")
-        st.markdown("📖 **[Supporting docs in tesla-sales-extras/docs_sources.md and PUBLIC_DATA_INGEST_PLAN.md]**")
-        st.markdown("""
-        **Public automated sources (Tesla brand only)**:
-        - CnEVPost weekly insurance registrations (China Tesla specific).
-        - Tesla IR quarterly deliveries (global ground truth / reconciliation).
-        - Robbie Andrew CSV (BEV *totals* for share context only — never stored as Tesla sales. CC-BY 4.0, credit in footer).
 
-        All old X post data and references have been purged. The dashboard is now driven by public sources only.
-        """)
+def _tab_about() -> None:
+    st.markdown(f"""
+### Sources
 
-    st.caption("Tesla brand only. Public sources (CnEVPost, Tesla IR, Robbie for BEV context). CC-BY Robbie Andrew for context data.")
+- **National registration agencies** (manual entry): KBA (Germany), OFV (Norway),
+  SMMT (UK), PFA (France), Mobility Sweden, bilstatistik.dk (Denmark),
+  ANFAC (Spain), RDW (Netherlands). Monthly, 1-5 days after month-end.
+- **CnEVPost** (auto-scraped): China weekly Tesla insurance registrations,
+  published Mondays/Tuesdays. <{CNEVPOST_TAG_URL}>
+- **Tesla IR** (manual): quarterly global delivery numbers, reconciliation row.
+  <https://ir.tesla.com>
+- **Robbie Andrew** (optional context, not yet ingested): pre-aggregated
+  monthly car-sales CSV, ~25 countries, CC-BY 4.0. <{ROBBIE_ANDREW_PAGE}>
+
+### Metrics - these are not interchangeable
+
+- `registration`: vehicle entered in a national database. Lags delivery
+  by days/weeks.
+- `insurance`: vehicle insured. China-specific retail proxy.
+- `wholesale`: factory-to-dealer shipment. CPCA wholesale includes
+  Giga Shanghai exports, which is not the same as China retail demand.
+- `delivery`: Tesla's reported deliveries (quarterly press release;
+  global ground truth).
+
+### Limitations
+
+- Manual seed data covers a partial slice of recent European months.
+  Backfill by pasting each agency's monthly figure via the sidebar form.
+- The CnEVPost scraper depends on their HTML layout. If they change it,
+  no records are inserted (it fails closed, not silently wrong). Fix the
+  regex in `_extract_tesla_units` and `_parse_week_ending`.
+- SQLite at `data/tesla_sales.db` is local-only. For shared multi-user
+  persistence (e.g. Streamlit Cloud), swap `get_conn()` for a Postgres
+  connection (Neon, Supabase, or Turso libSQL).
+""")
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Tesla Regional Sales",
+        layout="wide",
+        page_icon="🚗",
+    )
+    st.title("🚗 Tesla Regional Sales Dashboard")
+    st.caption(
+        "Tesla vehicle registrations and deliveries by country, aggregated "
+        "from national agencies, CnEVPost weekly insurance data, and "
+        "Tesla IR. Local SQLite store."
+    )
+
+    init_db()
+    seed_if_empty()
+
+    with st.sidebar:
+        _sidebar_refresh()
+        _sidebar_manual_entry()
+
+    df = load_df()
+    tab_latest, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
+        ["📊 Latest", "📈 Monthly trends", "🇨🇳 China weekly",
+         "🗂 All data", "ℹ️ About"]
+    )
+    with tab_latest:
+        _tab_latest(df)
+    with tab_monthly:
+        _tab_monthly(df)
+    with tab_china:
+        _tab_china(df)
+    with tab_all:
+        _tab_all(df)
+    with tab_about:
+        _tab_about()
 
 
 if __name__ == "__main__":
