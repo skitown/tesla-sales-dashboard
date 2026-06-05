@@ -354,7 +354,13 @@ def _sidebar_refresh() -> None:
     st.header("Auto-refresh")
     st.caption("Only China weekly data is auto-scraped. European monthly "
                "figures go in via the form below.")
-    if st.button("Refresh China weekly (CnEVPost)", use_container_width=True):
+    if st.button(
+        "Refresh China weekly (CnEVPost)",
+        use_container_width=True,
+        help="CnEVPost publishes new weekly data every Mon/Tue Beijing time "
+             "(Sun night / Mon morning US Pacific). One click per week is "
+             "enough — extra clicks are harmless.",
+    ):
         with st.spinner("Scraping CnEVPost..."):
             new = fetch_cnevpost(limit=10)
         n = sum(1 for r in new if upsert(r))
