@@ -111,6 +111,44 @@ SEED_DATA = [
      "source": "SMMT", "source_url": "https://www.smmt.co.uk",
      "notes": "+20% YoY; 5,177 Model Y"},
 
+    # April 2026 partial fill for Q2 tracker (more to add)
+    {"country": "Germany", "region": "Europe", "period_start": "2026-04-01",
+     "period_type": "monthly", "metric": "registration", "units": 3149,
+     "source": "KBA", "source_url": "https://www.kba.de",
+     "notes": "+256% YoY; best-ever April in Germany (via ACEA)"},
+
+    # Norway full-quarter history (good case study; OFV publishes 1st of month)
+    {"country": "Norway", "region": "Europe", "period_start": "2026-01-01",
+     "period_type": "monthly", "metric": "registration", "units": 83,
+     "source": "OFV", "source_url": "https://ofv.no",
+     "notes": "Subsidy expiration crater; lowest in 3 years"},
+    {"country": "Norway", "region": "Europe", "period_start": "2026-02-01",
+     "period_type": "monthly", "metric": "registration", "units": 1210,
+     "source": "OFV", "source_url": "https://ofv.no",
+     "notes": "+75.6% YoY; rebound from January"},
+
+    # Tesla IR quarterly global deliveries (ground truth from SEC 8-K filings)
+    {"country": "Global", "region": "Global", "period_start": "2025-01-01",
+     "period_type": "quarterly", "metric": "delivery", "units": 336681,
+     "source": "Tesla IR", "source_url": "https://ir.tesla.com",
+     "notes": "Q1 2025 reported deliveries"},
+    {"country": "Global", "region": "Global", "period_start": "2025-04-01",
+     "period_type": "quarterly", "metric": "delivery", "units": 384122,
+     "source": "Tesla IR", "source_url": "https://ir.tesla.com",
+     "notes": "Q2 2025 reported deliveries"},
+    {"country": "Global", "region": "Global", "period_start": "2025-07-01",
+     "period_type": "quarterly", "metric": "delivery", "units": 497099,
+     "source": "Tesla IR", "source_url": "https://ir.tesla.com",
+     "notes": "Q3 2025 reported deliveries (all-time record)"},
+    {"country": "Global", "region": "Global", "period_start": "2025-10-01",
+     "period_type": "quarterly", "metric": "delivery", "units": 418227,
+     "source": "Tesla IR", "source_url": "https://ir.tesla.com",
+     "notes": "Q4 2025 reported deliveries"},
+    {"country": "Global", "region": "Global", "period_start": "2026-01-01",
+     "period_type": "quarterly", "metric": "delivery", "units": 358023,
+     "source": "Tesla IR", "source_url": "https://ir.tesla.com",
+     "notes": "Q1 2026 reported deliveries; missed 365,645 consensus"},
+
     # China weekly seed (CnEVPost; will be extended by the scraper)
     {"country": "China", "region": "China", "period_start": "2025-09-08",
      "period_type": "weekly", "metric": "insurance", "units": 15350,
@@ -189,12 +227,12 @@ def load_df() -> pd.DataFrame:
     return df
 
 
-def seed_if_empty() -> None:
-    with get_conn() as conn:
-        n = conn.execute("SELECT COUNT(*) FROM tesla_sales").fetchone()[0]
-    if n == 0:
-        for rec in SEED_DATA:
-            upsert(rec)
+def seed_baseline() -> None:
+    """Upsert every row in SEED_DATA. Idempotent (UNIQUE constraint + INSERT
+    OR REPLACE), so this is safe to run on every startup and picks up any
+    new seed rows added in code without re-creating the DB."""
+    for rec in SEED_DATA:
+        upsert(rec)
 
 
 # ---- CnEVPost scraper ----
@@ -313,8 +351,10 @@ def fetch_cnevpost(limit: int = 10) -> list[dict]:
 # ---- UI ----
 
 def _sidebar_refresh() -> None:
-    st.header("Refresh")
-    if st.button("Pull latest from CnEVPost", use_container_width=True):
+    st.header("Auto-refresh")
+    st.caption("Only China weekly data is auto-scraped. European monthly "
+               "figures go in via the form below.")
+    if st.button("Refresh China weekly (CnEVPost)", use_container_width=True):
         with st.spinner("Scraping CnEVPost..."):
             new = fetch_cnevpost(limit=10)
         n = sum(1 for r in new if upsert(r))
@@ -364,6 +404,159 @@ def _sidebar_manual_entry() -> None:
             if ok:
                 st.success(f"Added {country} {period} {int(units):,}")
                 st.rerun()
+
+
+def _quarter_of(d: date) -> tuple[int, int]:
+    """Return (year, quarter_number) for a date."""
+    return d.year, (d.month - 1) // 3 + 1
+
+
+def _quarter_bounds(year: int, q: int) -> tuple[date, date]:
+    """First day and last day of a quarter."""
+    start = date(year, (q - 1) * 3 + 1, 1)
+    if q == 4:
+        end = date(year, 12, 31)
+    else:
+        end = date(year, q * 3 + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def _tab_quarter(df: pd.DataFrame) -> None:
+    today = date.today()
+    cur_year, cur_q = _quarter_of(today)
+    q_start, q_end = _quarter_bounds(cur_year, cur_q)
+    quarter_label = f"Q{cur_q} {cur_year}"
+
+    st.subheader(f"{quarter_label} delivery tracker")
+    st.caption(
+        f"Building a bottom-up estimate of Tesla's {quarter_label} global "
+        f"deliveries from publicly reported registration data. Tesla reports "
+        f"the official global number ~3 days after quarter-end "
+        f"({q_end.strftime('%b %d')})."
+    )
+
+    if df.empty:
+        st.info("No data loaded.")
+        return
+
+    # Slice: anything whose period_start falls inside the current quarter.
+    in_q = df[(df["period_start"] >= pd.Timestamp(q_start)) &
+              (df["period_start"] <= pd.Timestamp(q_end))]
+
+    # Monthly registrations (the main bottom-up signal for non-China markets)
+    monthly = in_q[(in_q["period_type"] == "monthly") &
+                   (in_q["metric"] == "registration")]
+    monthly_total = int(monthly["units"].sum())
+    countries_reporting = monthly["country"].nunique()
+
+    # China weekly insurance (separate retail proxy; don't add to monthly)
+    china_weekly = in_q[(in_q["country"] == "China") &
+                        (in_q["period_type"] == "weekly") &
+                        (in_q["metric"] == "insurance")]
+    china_weekly_total = int(china_weekly["units"].sum())
+    china_weeks = len(china_weekly)
+
+    # Reference: Tesla's reported delivery for the same quarter last year
+    prior_year_q = df[
+        (df["country"] == "Global") &
+        (df["metric"] == "delivery") &
+        (df["period_start"] == pd.Timestamp(date(cur_year - 1, q_start.month, 1)))
+    ]
+    prior_year_total = int(prior_year_q["units"].iloc[0]) if not prior_year_q.empty else None
+
+    # Reference: previous quarter's reported delivery
+    prev_year = cur_year if cur_q > 1 else cur_year - 1
+    prev_q = cur_q - 1 if cur_q > 1 else 4
+    prev_q_start, _ = _quarter_bounds(prev_year, prev_q)
+    prev_q_row = df[
+        (df["country"] == "Global") &
+        (df["metric"] == "delivery") &
+        (df["period_start"] == pd.Timestamp(prev_q_start))
+    ]
+    prev_q_total = int(prev_q_row["units"].iloc[0]) if not prev_q_row.empty else None
+
+    # Headline metrics
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        f"{quarter_label} Europe-tracked",
+        f"{monthly_total:,}",
+        f"{countries_reporting} countries reporting",
+    )
+    c2.metric(
+        f"{quarter_label} China weekly (CnEVPost)",
+        f"{china_weekly_total:,}",
+        f"{china_weeks} weeks of insurance data",
+    )
+    if prior_year_total:
+        c3.metric(
+            f"Q{cur_q} {cur_year - 1} reported (Tesla IR)",
+            f"{prior_year_total:,}",
+            "global delivery total",
+        )
+
+    if prev_q_total:
+        st.caption(
+            f"Previous quarter (Q{prev_q} {prev_year}) reported delivery: "
+            f"**{prev_q_total:,}** (global, Tesla IR). The tracked numbers above "
+            f"are a partial bottom-up read of {quarter_label}; they will always be "
+            f"smaller than the global figure because they only cover the markets "
+            f"with public registration data."
+        )
+
+    # Coverage matrix: country x month
+    st.markdown("#### Country × month matrix (monthly registrations)")
+    if monthly.empty:
+        st.info("No monthly registrations recorded in this quarter yet.")
+    else:
+        m = monthly.copy()
+        m["month_label"] = m["period_start"].dt.strftime("%b")
+        # Build column order matching quarter months
+        month_cols = []
+        for i in range(3):
+            mo = (q_start.month + i - 1) % 12 + 1
+            yr = q_start.year + ((q_start.month + i - 1) // 12)
+            month_cols.append(date(yr, mo, 1).strftime("%b"))
+        matrix = m.pivot_table(
+            index="country", columns="month_label", values="units",
+            aggfunc="sum", fill_value=0,
+        ).reindex(columns=month_cols, fill_value=0)
+        matrix["Q total"] = matrix.sum(axis=1)
+        # Display 0s as dashes
+        display = matrix.replace(0, "—").astype(str)
+        for col in matrix.columns:
+            display[col] = matrix[col].apply(
+                lambda x: f"{int(x):,}" if x else "—"
+            )
+        st.dataframe(display, use_container_width=True)
+
+    # China weekly bars
+    if not china_weekly.empty:
+        st.markdown("#### China weekly insurance (CnEVPost, this quarter)")
+        cw = china_weekly.sort_values("period_start")
+        fig = px.bar(
+            cw, x="period_start", y="units",
+            title=f"China weekly insurance registrations during {quarter_label}",
+        )
+        fig.update_layout(height=320, yaxis_title="Units", xaxis_title="")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Historical quarterly Tesla IR context
+    st.markdown("#### Tesla reported quarterly deliveries (for context)")
+    hist = df[
+        (df["country"] == "Global") &
+        (df["metric"] == "delivery")
+    ].sort_values("period_start")
+    if not hist.empty:
+        hist_display = hist[["period_start", "units", "notes"]].copy()
+        hist_display["quarter"] = hist_display["period_start"].apply(
+            lambda d: f"Q{(d.month - 1) // 3 + 1} {d.year}"
+        )
+        hist_display = hist_display[["quarter", "units", "notes"]]
+        hist_display.columns = ["Quarter", "Deliveries", "Notes"]
+        hist_display["Deliveries"] = hist_display["Deliveries"].apply(
+            lambda x: f"{int(x):,}"
+        )
+        st.dataframe(hist_display, use_container_width=True, hide_index=True)
 
 
 def _tab_latest(df: pd.DataFrame) -> None:
@@ -501,17 +694,19 @@ def main() -> None:
     )
 
     init_db()
-    seed_if_empty()
+    seed_baseline()
 
     with st.sidebar:
         _sidebar_refresh()
         _sidebar_manual_entry()
 
     df = load_df()
-    tab_latest, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
-        ["📊 Latest", "📈 Monthly trends", "🇨🇳 China weekly",
-         "🗂 All data", "ℹ️ About"]
+    tab_q, tab_latest, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
+        ["🎯 Quarter tracker", "📊 Latest", "📈 Monthly trends",
+         "🇨🇳 China weekly", "🗂 All data", "ℹ️ About"]
     )
+    with tab_q:
+        _tab_quarter(df)
     with tab_latest:
         _tab_latest(df)
     with tab_monthly:
