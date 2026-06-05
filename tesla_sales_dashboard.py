@@ -50,6 +50,38 @@ CNEVPOST_TAG_URL = "https://cnevpost.com/tag/insurance-registrations/"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) tesla-sales-dashboard/0.1"
 
 
+# Country -> default region, source agency, and source URL. Used by the
+# sidebar form so the user only has to pick a country and the rest auto-fills.
+COUNTRY_PRESETS = {
+    "Germany":     {"region": "Europe", "source": "KBA",             "source_url": "https://www.kba.de"},
+    "France":      {"region": "Europe", "source": "PFA",             "source_url": "https://pfa-auto.fr"},
+    "UK":          {"region": "Europe", "source": "SMMT",            "source_url": "https://www.smmt.co.uk"},
+    "Norway":      {"region": "Europe", "source": "OFV",             "source_url": "https://ofv.no"},
+    "Sweden":      {"region": "Europe", "source": "Mobility Sweden", "source_url": "https://mobilitysweden.se"},
+    "Denmark":     {"region": "Europe", "source": "bilstatistik.dk", "source_url": "https://bilstatistik.dk"},
+    "Netherlands": {"region": "Europe", "source": "RDW",             "source_url": "https://opendata.rdw.nl"},
+    "Spain":       {"region": "Europe", "source": "ANFAC",           "source_url": "https://anfac.com"},
+    "Italy":       {"region": "Europe", "source": "UNRAE",           "source_url": "https://unrae.it"},
+    "Belgium":     {"region": "Europe", "source": "Febiac",          "source_url": "https://febiac.be"},
+    "Portugal":    {"region": "Europe", "source": "ACAP",            "source_url": "https://acap.pt"},
+    "Switzerland": {"region": "Europe", "source": "auto-suisse",     "source_url": "https://auto.swiss"},
+    "Ireland":     {"region": "Europe", "source": "SIMI",            "source_url": "https://simi.ie"},
+    "Austria":     {"region": "Europe", "source": "Statistik Austria","source_url": "https://statistik.at"},
+}
+
+
+def _last_n_months(n: int) -> list[str]:
+    """Return the last n months as 'YYYY-MM' strings, most recent first."""
+    today = date.today()
+    out, y, m = [], today.year, today.month
+    for _ in range(n):
+        out.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return out
+
+
 # ---- Seed data ----
 # Curated from agency releases reported in May-June 2026. Replace/extend by
 # pasting from KBA, OFV, SMMT, PFA, Mobility Sweden, bilstatistik.dk, etc.
@@ -370,42 +402,41 @@ def _sidebar_refresh() -> None:
 
 def _sidebar_manual_entry() -> None:
     st.divider()
-    st.header("Add monthly figure")
-    st.caption("For monthly releases from KBA, OFV, SMMT, PFA, etc.")
+    st.header("Add monthly registration")
+    st.caption("For new agency releases (KBA, OFV, SMMT, PFA, etc.). "
+               "Country picks the source automatically.")
     with st.form("manual_add", clear_on_submit=True):
-        country = st.text_input("Country", placeholder="Germany")
-        region = st.selectbox(
-            "Region",
-            ["Europe", "China", "US", "Asia ex-China", "Global", "Other"],
-        )
-        period = st.date_input(
-            "Period start (1st of month for monthly)",
-            value=date.today().replace(day=1),
-        )
-        period_type = st.selectbox("Period type", ["monthly", "weekly", "quarterly"])
-        metric = st.selectbox(
-            "Metric", ["registration", "insurance", "wholesale", "delivery"]
-        )
-        units = st.number_input("Units", min_value=0, step=1)
-        source = st.text_input("Source", placeholder="KBA")
-        source_url = st.text_input("Source URL (optional)")
-        notes = st.text_input("Notes (optional)")
+        country = st.selectbox("Country", list(COUNTRY_PRESETS.keys()))
+        month = st.selectbox("Month", _last_n_months(18))
+        units = st.number_input("Tesla units", min_value=1, step=1, value=None,
+                                placeholder="e.g. 5111")
+        notes = st.text_input("Notes (optional)",
+                              placeholder="e.g. +75% YoY, record month")
         submitted = st.form_submit_button("Add", use_container_width=True)
-        if submitted and country and units > 0 and source:
-            ok = upsert({
-                "country": country.strip(),
-                "region": region,
-                "period_start": period.isoformat(),
-                "period_type": period_type,
-                "metric": metric,
-                "units": int(units),
-                "source": source.strip(),
-                "source_url": source_url.strip() or None,
-                "notes": notes.strip(),
-            })
-            if ok:
-                st.success(f"Added {country} {period} {int(units):,}")
-                st.rerun()
+        if not submitted:
+            return
+        if units is None or units < 1:
+            st.error("Please enter a units value greater than 0.")
+            return
+        preset = COUNTRY_PRESETS[country]
+        year_str, month_str = month.split("-")
+        ok = upsert({
+            "country": country,
+            "region": preset["region"],
+            "period_start": date(int(year_str), int(month_str), 1).isoformat(),
+            "period_type": "monthly",
+            "metric": "registration",
+            "units": int(units),
+            "source": preset["source"],
+            "source_url": preset["source_url"],
+            "notes": notes.strip() if notes else "",
+        })
+        if ok:
+            st.success(f"Added {country} {month}: {int(units):,} units "
+                       f"(source: {preset['source']})")
+            st.rerun()
+        else:
+            st.error("Insert failed — check the terminal for details.")
 
 
 def _quarter_of(d: date) -> tuple[int, int]:
