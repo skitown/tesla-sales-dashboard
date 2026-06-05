@@ -402,21 +402,21 @@ def _sidebar_refresh() -> None:
 
 def _sidebar_manual_entry() -> None:
     st.divider()
-    st.header("Manual entry")
+    st.header("Manual Updates")
     st.caption("Monthly figures from European agencies (KBA, OFV, SMMT, PFA, "
                "etc.). Pick a country and the source fills in automatically.")
     with st.form("manual_add", clear_on_submit=True):
         country = st.selectbox("Country", list(COUNTRY_PRESETS.keys()))
         month = st.selectbox("Month", _last_n_months(18))
-        units = st.number_input("Tesla units", min_value=1, step=1, value=None,
+        units = st.number_input("Tesla units", min_value=0, step=1, value=None,
                                 placeholder="e.g. 5111")
         notes = st.text_input("Notes (optional)",
                               placeholder="e.g. +75% YoY, record month")
         submitted = st.form_submit_button("Add", use_container_width=True)
         if not submitted:
             return
-        if units is None or units < 1:
-            st.error("Please enter a units value greater than 0.")
+        if units is None or units < 0:
+            st.error("Please enter a units value (0 or greater).")
             return
         preset = COUNTRY_PRESETS[country]
         year_str, month_str = month.split("-")
