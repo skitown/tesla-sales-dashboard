@@ -402,9 +402,9 @@ def _sidebar_refresh() -> None:
 
 def _sidebar_manual_entry() -> None:
     st.divider()
-    st.header("Add monthly registration")
-    st.caption("For new agency releases (KBA, OFV, SMMT, PFA, etc.). "
-               "Country picks the source automatically.")
+    st.header("Manual entry")
+    st.caption("Monthly figures from European agencies (KBA, OFV, SMMT, PFA, "
+               "etc.). Pick a country and the source fills in automatically.")
     with st.form("manual_add", clear_on_submit=True):
         country = st.selectbox("Country", list(COUNTRY_PRESETS.keys()))
         month = st.selectbox("Month", _last_n_months(18))
