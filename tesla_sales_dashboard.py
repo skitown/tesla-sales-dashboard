@@ -597,7 +597,7 @@ def _sidebar_refresh() -> None:
                  "this country and month.",
         )
         source_url = st.text_input(
-            "Source URL (X post link)",
+            "Source URL (optional, but appreciated for traceability)",
             placeholder="https://x.com/piloly/status/...",
         )
         submitted = st.form_submit_button("Submit", width="stretch")
@@ -977,21 +977,31 @@ def _tab_all(df: pd.DataFrame) -> None:
 
 def _tab_about() -> None:
     st.markdown(f"""
+### How to use
+
+- **Quarter tracker:** live progress toward Tesla's upcoming quarterly
+  delivery number, building bottom-up from regional data.
+- **Monthly trends:** country-by-country deliveries over time.
+- **Refresh button** in the sidebar pulls latest TMC + CnEVPost data
+  (otherwise cached for 1 hour).
+- **Add RoW data** in the sidebar to enter manual numbers for markets
+  without an auto-feed (Australia, Korea, Japan, etc.).
+
 ### Sources
 
 - **TMC community sheet** (auto-pulled hourly via Google Sheets API):
   *Tesla Europe Registration Stats*, maintained by volunteers in the
   [Tesla Motors Club forum]({TMC_SHEET_URL}). Per-country, per-model,
-  per-month Tesla registrations across ~16 European markets. Credit goes
-  to the maintainers (Darkandstormy, Mrdoubleb, Hobbes, Troy, and others
-  listed in each section of the sheet).
+  per-month Tesla registrations across ~16 European markets.
 - **CnEVPost** (auto-scraped): Tesla China monthly wholesale (CPCA total,
   includes Giga Shanghai exports) and retail breakdown (CPCA domestic only).
   Published 1-3 days after month-end (wholesale) and ~10 days after (retail).
   <https://cnevpost.com/tesla/>
-- **Tesla IR** (in-code seed): quarterly global delivery numbers, used as
-  the ground-truth reference row. Update `SEED_DATA` once per quarter
-  after the press release. <https://ir.tesla.com>
+- **X aggregators** — @piloly, @Tslachan, @TheEVuniverse, @hxm_196_44
+  (and others). Source of Rest-of-World data for countries without an
+  auto-feed. Numbers added manually via the sidebar form.
+- **Tesla IR:** quarterly global delivery numbers, used as the ground-truth
+  reference. <https://ir.tesla.com>
 
 ### Metrics — these are not interchangeable
 
