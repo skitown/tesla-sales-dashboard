@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import json
+import urllib.parse
 import urllib.request
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -47,6 +49,8 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 ROBBIE_ANDREW_PAGE = "https://robbieandrew.github.io/carsales/"
 CNEVPOST_TAG_URL = "https://cnevpost.com/tag/insurance-registrations/"
+TMC_SHEET_ID = "1Vobg29R1t3FphlWjb8dwG4nkAWqyc_qMwkCjUT8SUno"
+TMC_SHEET_URL = "https://teslamotorsclub.com/tmc/threads/tesla-europe-registration-stats.61651/"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) tesla-sales-dashboard/0.1"
 
 
@@ -83,82 +87,12 @@ def _last_n_months(n: int) -> list[str]:
 
 
 # ---- Seed data ----
-# Curated from agency releases reported in May-June 2026. Replace/extend by
-# pasting from KBA, OFV, SMMT, PFA, Mobility Sweden, bilstatistik.dk, etc.
+# European registrations are now pulled live from the TMC community sheet
+# (see fetch_community_sheet below). The local seed only carries data the
+# sheet doesn't cover: Tesla IR quarterly global delivery numbers and a
+# couple of China weekly samples to bootstrap until the CnEVPost scraper runs.
 
 SEED_DATA = [
-    # Germany (KBA)
-    {"country": "Germany", "region": "Europe", "period_start": "2026-05-01",
-     "period_type": "monthly", "metric": "registration", "units": 5111,
-     "source": "KBA", "source_url": "https://www.kba.de",
-     "notes": "+322% YoY"},
-    {"country": "Germany", "region": "Europe", "period_start": "2026-03-01",
-     "period_type": "monthly", "metric": "registration", "units": 9252,
-     "source": "KBA", "source_url": "https://www.kba.de",
-     "notes": "Best-ever March in Germany; +315% YoY"},
-
-    # France (PFA)
-    {"country": "France", "region": "Europe", "period_start": "2026-05-01",
-     "period_type": "monthly", "metric": "registration", "units": 5446,
-     "source": "PFA", "source_url": "https://pfa-auto.fr",
-     "notes": "+655% YoY; best May ever in France"},
-    {"country": "France", "region": "Europe", "period_start": "2026-03-01",
-     "period_type": "monthly", "metric": "registration", "units": 9569,
-     "source": "PFA", "source_url": "https://pfa-auto.fr",
-     "notes": "+203% YoY; near all-time monthly record"},
-
-    # Norway (OFV)
-    {"country": "Norway", "region": "Europe", "period_start": "2026-05-01",
-     "period_type": "monthly", "metric": "registration", "units": 3345,
-     "source": "OFV", "source_url": "https://ofv.no",
-     "notes": "+29% YoY; 21.5% market share"},
-    {"country": "Norway", "region": "Europe", "period_start": "2026-03-01",
-     "period_type": "monthly", "metric": "registration", "units": 6150,
-     "source": "OFV", "source_url": "https://ofv.no",
-     "notes": "+178% YoY"},
-
-    # Sweden (Mobility Sweden)
-    {"country": "Sweden", "region": "Europe", "period_start": "2026-05-01",
-     "period_type": "monthly", "metric": "registration", "units": 858,
-     "source": "Mobility Sweden", "source_url": "https://mobilitysweden.se",
-     "notes": "+71% YoY"},
-    {"country": "Sweden", "region": "Europe", "period_start": "2026-03-01",
-     "period_type": "monthly", "metric": "registration", "units": 1447,
-     "source": "Mobility Sweden", "source_url": "https://mobilitysweden.se",
-     "notes": "+144% YoY"},
-
-    # Denmark (bilstatistik.dk)
-    {"country": "Denmark", "region": "Europe", "period_start": "2026-05-01",
-     "period_type": "monthly", "metric": "registration", "units": 1750,
-     "source": "bilstatistik.dk", "source_url": "https://bilstatistik.dk",
-     "notes": "+136% YoY; Model Y top-selling vehicle"},
-    {"country": "Denmark", "region": "Europe", "period_start": "2026-03-01",
-     "period_type": "monthly", "metric": "registration", "units": 1784,
-     "source": "bilstatistik.dk", "source_url": "https://bilstatistik.dk",
-     "notes": "+96% YoY"},
-
-    # UK (SMMT)
-    {"country": "UK", "region": "Europe", "period_start": "2026-03-01",
-     "period_type": "monthly", "metric": "registration", "units": 8599,
-     "source": "SMMT", "source_url": "https://www.smmt.co.uk",
-     "notes": "+20% YoY; 5,177 Model Y"},
-
-    # April 2026 partial fill for Q2 tracker (more to add)
-    {"country": "Germany", "region": "Europe", "period_start": "2026-04-01",
-     "period_type": "monthly", "metric": "registration", "units": 3149,
-     "source": "KBA", "source_url": "https://www.kba.de",
-     "notes": "+256% YoY; best-ever April in Germany (via ACEA)"},
-
-    # Norway full-quarter history (good case study; OFV publishes 1st of month)
-    {"country": "Norway", "region": "Europe", "period_start": "2026-01-01",
-     "period_type": "monthly", "metric": "registration", "units": 83,
-     "source": "OFV", "source_url": "https://ofv.no",
-     "notes": "Subsidy expiration crater; lowest in 3 years"},
-    {"country": "Norway", "region": "Europe", "period_start": "2026-02-01",
-     "period_type": "monthly", "metric": "registration", "units": 1210,
-     "source": "OFV", "source_url": "https://ofv.no",
-     "notes": "+75.6% YoY; rebound from January"},
-
     # Tesla IR quarterly global deliveries (ground truth from SEC 8-K filings)
     {"country": "Global", "region": "Global", "period_start": "2025-01-01",
      "period_type": "quarterly", "metric": "delivery", "units": 336681,
@@ -265,6 +199,145 @@ def seed_baseline() -> None:
     new seed rows added in code without re-creating the DB."""
     for rec in SEED_DATA:
         upsert(rec)
+
+
+# ---- TMC community sheet (European registrations) ----
+
+# Column layout in the main tab of the community sheet. The columns are:
+# 0=blank, 1=section labels, 2=country, 3=YTD, 4=Jan, 5=Feb, 6=Mar, 7=Q1,
+# 8=Apr, 9=May, 10=Jun, 11=Q2, 12=Jul, 13=Aug, 14=Sep, 15=Q3, 16=Oct,
+# 17=Nov, 18=Dec, 19=Q4.
+_TMC_MONTH_COLS = {1: 4, 2: 5, 3: 6, 4: 8, 5: 9, 6: 10,
+                   7: 12, 8: 13, 9: 14, 10: 16, 11: 17, 12: 18}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_community_sheet() -> Optional[pd.DataFrame]:
+    """Pull European registration data live from the TMC-hosted community
+    Google Sheet. Returns a long-format dataframe with columns: country,
+    model, period_start, units. None on failure."""
+    api_key = st.secrets.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        st.error("GOOGLE_API_KEY not found in .streamlit/secrets.toml. "
+                 "European data will be unavailable until that's set.")
+        return None
+
+    # Step 1: discover the first tab's title (varies by year)
+    meta_url = (f"https://sheets.googleapis.com/v4/spreadsheets/"
+                f"{TMC_SHEET_ID}?key={api_key}")
+    try:
+        req = urllib.request.Request(meta_url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            meta = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        st.warning(f"Community sheet metadata fetch failed: {e}")
+        return None
+
+    sheets_meta = meta.get("sheets", [])
+    if not sheets_meta:
+        return None
+    first_tab = sheets_meta[0]["properties"]["title"]
+
+    # Step 2: fetch values from the main tab
+    rng = urllib.parse.quote(f"{first_tab}!A1:T250")
+    values_url = (f"https://sheets.googleapis.com/v4/spreadsheets/"
+                  f"{TMC_SHEET_ID}/values/{rng}?key={api_key}")
+    try:
+        req = urllib.request.Request(values_url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        st.warning(f"Community sheet values fetch failed: {e}")
+        return None
+
+    values = data.get("values", [])
+    if not values:
+        return None
+    return _parse_tmc_main_tab(values)
+
+
+def _parse_tmc_main_tab(values: list[list[str]]) -> pd.DataFrame:
+    """Parse the multi-section CSV-like layout. Each model has its own
+    section, separated by 'Model X Registrations in Europe in YYYY' headers."""
+    # Pad ragged rows so iat() doesn't fall off the end
+    width = max((len(r) for r in values), default=0)
+    rows = [r + [""] * (width - len(r)) for r in values]
+
+    section_pat = re.compile(
+        r"Model\s+(\S+)\s+Registrations in Europe in (\d{4})", re.I
+    )
+    sections = []
+    for i, row in enumerate(rows):
+        cell = row[1] if len(row) > 1 else ""
+        m = section_pat.search(str(cell))
+        if m:
+            sections.append((i, m.group(1), int(m.group(2))))
+
+    records = []
+    for s_idx, (start_row, model, year) in enumerate(sections):
+        end_row = sections[s_idx + 1][0] if s_idx + 1 < len(sections) else len(rows)
+        # Country data rows start 2 rows below the section header
+        # (header + column-name row)
+        for r in range(start_row + 2, end_row):
+            country = str(rows[r][2]).strip() if len(rows[r]) > 2 else ""
+            if not country:
+                continue
+            if country == "Total" or country.lower().startswith("tesla fans"):
+                break
+            display_country = "Other Europe" if country == "Other" else country
+
+            for month_num, col in _TMC_MONTH_COLS.items():
+                if col >= len(rows[r]):
+                    continue
+                cell = str(rows[r][col]).replace(",", "").strip()
+                if not cell or cell == "0":
+                    continue
+                try:
+                    units = int(cell)
+                except ValueError:
+                    continue
+                records.append({
+                    "country": display_country,
+                    "model": f"Model {model}",
+                    "period_start": date(year, month_num, 1).isoformat(),
+                    "units": units,
+                })
+    return pd.DataFrame(records)
+
+
+def load_combined_df() -> pd.DataFrame:
+    """Combine local SQLite (China weekly + Tesla IR) with the live TMC
+    community pull (European monthly registrations). Returns a dataframe
+    with the same schema as load_df() so existing tab code keeps working."""
+    local = load_df()
+    community = fetch_community_sheet()
+    if community is None or community.empty:
+        return local
+
+    # Aggregate community: sum across models per country/month for total Tesla
+    agg = (community.groupby(["country", "period_start"])["units"]
+                    .sum().reset_index())
+    agg["region"] = "Europe"
+    agg["period_type"] = "monthly"
+    agg["metric"] = "registration"
+    agg["source"] = "TMC community sheet"
+    agg["source_url"] = TMC_SHEET_URL
+    agg["notes"] = ""
+    agg["ingested_at"] = datetime.utcnow().isoformat()
+    agg["id"] = -1
+    agg["period_start"] = pd.to_datetime(agg["period_start"])
+
+    # Drop any local European monthly registration rows that the community
+    # sheet covers; community is authoritative for that data slice.
+    if not local.empty:
+        local_mask = (
+            (local["region"] == "Europe") &
+            (local["period_type"] == "monthly") &
+            (local["metric"] == "registration")
+        )
+        local = local[~local_mask]
+
+    return pd.concat([agg, local], ignore_index=True)
 
 
 # ---- CnEVPost scraper ----
@@ -383,9 +456,25 @@ def fetch_cnevpost(limit: int = 10) -> list[dict]:
 # ---- UI ----
 
 def _sidebar_refresh() -> None:
-    st.header("Auto-refresh")
-    st.caption("Only China weekly data is auto-scraped. European monthly "
-               "figures go in via the form below.")
+    st.header("Data sources")
+    st.caption("European data pulls live from the TMC community sheet. "
+               "China weekly pulls from CnEVPost. Both can be refreshed below.")
+
+    if st.button("Refresh European data (TMC sheet)", use_container_width=True):
+        fetch_community_sheet.clear()
+        with st.spinner("Pulling TMC community sheet..."):
+            community = fetch_community_sheet()
+        if community is not None and not community.empty:
+            n_rows = len(community)
+            n_countries = community["country"].nunique()
+            st.success(f"Loaded {n_rows} model-country-month rows across "
+                       f"{n_countries} countries.")
+        else:
+            st.warning("No data returned — check your API key and that the "
+                       "Sheets API is enabled.")
+        st.rerun()
+    st.caption("Cached for 1 hour. Click to force a fresh pull.")
+
     if st.button("Refresh China weekly (CnEVPost)", use_container_width=True):
         with st.spinner("Scraping CnEVPost..."):
             new = fetch_cnevpost(limit=10)
@@ -398,45 +487,6 @@ def _sidebar_refresh() -> None:
             st.info("No new records (already current, or parser couldn't match the page).")
     st.caption("New data posts Mon/Tue Beijing time "
                "(Sun night / Mon morning US Pacific). Once a week is enough.")
-
-
-def _sidebar_manual_entry() -> None:
-    st.divider()
-    st.header("Manual Updates")
-    st.caption("Monthly figures from European agencies (KBA, OFV, SMMT, PFA, "
-               "etc.). Pick a country and the source fills in automatically.")
-    with st.form("manual_add", clear_on_submit=True):
-        country = st.selectbox("Country", list(COUNTRY_PRESETS.keys()))
-        month = st.selectbox("Month", _last_n_months(18))
-        units = st.number_input("Tesla units", min_value=0, step=1, value=None,
-                                placeholder="e.g. 5111")
-        notes = st.text_input("Notes (optional)",
-                              placeholder="e.g. +75% YoY, record month")
-        submitted = st.form_submit_button("Add", use_container_width=True)
-        if not submitted:
-            return
-        if units is None or units < 0:
-            st.error("Please enter a units value (0 or greater).")
-            return
-        preset = COUNTRY_PRESETS[country]
-        year_str, month_str = month.split("-")
-        ok = upsert({
-            "country": country,
-            "region": preset["region"],
-            "period_start": date(int(year_str), int(month_str), 1).isoformat(),
-            "period_type": "monthly",
-            "metric": "registration",
-            "units": int(units),
-            "source": preset["source"],
-            "source_url": preset["source_url"],
-            "notes": notes.strip() if notes else "",
-        })
-        if ok:
-            st.success(f"Added {country} {month}: {int(units):,} units "
-                       f"(source: {preset['source']})")
-            st.rerun()
-        else:
-            st.error("Insert failed — check the terminal for details.")
 
 
 def _quarter_of(d: date) -> tuple[int, int]:
@@ -680,36 +730,40 @@ def _tab_about() -> None:
     st.markdown(f"""
 ### Sources
 
-- **National registration agencies** (manual entry): KBA (Germany), OFV (Norway),
-  SMMT (UK), PFA (France), Mobility Sweden, bilstatistik.dk (Denmark),
-  ANFAC (Spain), RDW (Netherlands). Monthly, 1-5 days after month-end.
+- **TMC community sheet** (auto-pulled hourly via Google Sheets API):
+  *Tesla Europe Registration Stats*, maintained by volunteers in the
+  [Tesla Motors Club forum]({TMC_SHEET_URL}). Per-country, per-model,
+  per-month Tesla registrations across ~16 European markets. Credit goes
+  to the maintainers (Darkandstormy, Mrdoubleb, Hobbes, Troy, and others
+  listed in each section of the sheet).
 - **CnEVPost** (auto-scraped): China weekly Tesla insurance registrations,
   published Mondays/Tuesdays. <{CNEVPOST_TAG_URL}>
-- **Tesla IR** (manual): quarterly global delivery numbers, reconciliation row.
-  <https://ir.tesla.com>
-- **Robbie Andrew** (optional context, not yet ingested): pre-aggregated
-  monthly car-sales CSV, ~25 countries, CC-BY 4.0. <{ROBBIE_ANDREW_PAGE}>
+- **Tesla IR** (in-code seed): quarterly global delivery numbers, used as
+  the ground-truth reference row. Update `SEED_DATA` once per quarter
+  after the press release. <https://ir.tesla.com>
 
-### Metrics - these are not interchangeable
+### Metrics — these are not interchangeable
 
 - `registration`: vehicle entered in a national database. Lags delivery
-  by days/weeks.
-- `insurance`: vehicle insured. China-specific retail proxy.
-- `wholesale`: factory-to-dealer shipment. CPCA wholesale includes
-  Giga Shanghai exports, which is not the same as China retail demand.
+  by days/weeks. (European national agencies, via TMC sheet.)
+- `insurance`: vehicle insured. China-specific retail proxy. (CnEVPost.)
 - `delivery`: Tesla's reported deliveries (quarterly press release;
   global ground truth).
+- `wholesale`: factory-to-dealer shipment. CPCA China wholesale includes
+  Giga Shanghai exports, which is not the same as China retail demand.
 
 ### Limitations
 
-- Manual seed data covers a partial slice of recent European months.
-  Backfill by pasting each agency's monthly figure via the sidebar form.
+- The TMC sheet typically lags individual X aggregators (Roland Pircher
+  et al.) by a day or two because the community validates each entry
+  before approving it. For a real-time read, the X feeds are faster;
+  this dashboard prioritizes validated data over speed.
 - The CnEVPost scraper depends on their HTML layout. If they change it,
   no records are inserted (it fails closed, not silently wrong). Fix the
   regex in `_extract_tesla_units` and `_parse_week_ending`.
-- SQLite at `data/tesla_sales.db` is local-only. For shared multi-user
-  persistence (e.g. Streamlit Cloud), swap `get_conn()` for a Postgres
-  connection (Neon, Supabase, or Turso libSQL).
+- SQLite at `data/tesla_sales.db` is local-only and now only stores
+  China weekly + Tesla IR. European data is never written to disk; it's
+  fetched fresh from the TMC sheet every hour.
 """)
 
 
@@ -731,9 +785,8 @@ def main() -> None:
 
     with st.sidebar:
         _sidebar_refresh()
-        _sidebar_manual_entry()
 
-    df = load_df()
+    df = load_combined_df()
     tab_q, tab_latest, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
         ["🎯 Quarter tracker", "📊 Latest", "📈 Monthly trends",
          "🇨🇳 China weekly", "🗂 All data", "ℹ️ About"]
