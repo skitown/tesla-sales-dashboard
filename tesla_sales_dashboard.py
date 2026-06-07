@@ -214,6 +214,25 @@ def load_df() -> pd.DataFrame:
     return df
 
 
+def delete_row(country: str, period_start: str, period_type: str,
+               metric: str, source: str) -> int:
+    """Delete a row matching the unique key. Returns the number of rows
+    deleted (0 if no match, 1 if deleted). Used to clear manual entries."""
+    try:
+        with get_conn() as conn:
+            cur = conn.execute(
+                """DELETE FROM tesla_sales
+                   WHERE country=? AND period_start=? AND period_type=?
+                     AND metric=? AND source=?""",
+                (country, period_start, period_type, metric, source),
+            )
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        st.error(f"Delete error: {e}")
+        return 0
+
+
 def seed_baseline() -> None:
     """Upsert every row in SEED_DATA. Idempotent (UNIQUE constraint + INSERT
     OR REPLACE), so this is safe to run on every startup and picks up any
@@ -564,24 +583,42 @@ def _sidebar_refresh() -> None:
         )
         units = st.number_input(
             "Units (vehicles)", min_value=0, max_value=50_000, value=0,
-            step=1, help="Set to 0 = invalid; the form will reject submission.",
+            step=1,
+            help="Set to 0 to clear/remove a previously-entered value for "
+                 "this country and month.",
         )
         source_url = st.text_input(
             "Source URL (X post link)",
             placeholder="https://x.com/piloly/status/...",
         )
-        submitted = st.form_submit_button("Add entry", width="stretch")
+        submitted = st.form_submit_button("Submit", width="stretch")
 
         if submitted:
-            if units <= 0:
-                st.error("Units must be greater than zero.")
+            sel = next(m for m in quarter_months
+                       if m["label"] == month_label)
+            period_start_iso = date(sel["year"], sel["month"], 1).isoformat()
+
+            if units == 0:
+                # Clear any existing manual entry for this country/month
+                n = delete_row(
+                    country=country,
+                    period_start=period_start_iso,
+                    period_type="monthly",
+                    metric="registration",
+                    source="X aggregator (manual)",
+                )
+                if n:
+                    st.success(f"✓ Cleared {country} {month_label}")
+                else:
+                    st.info(f"No existing entry for {country} {month_label} "
+                            "to clear.")
+                st.cache_data.clear()
+                st.rerun()
             else:
-                sel = next(m for m in quarter_months
-                           if m["label"] == month_label)
                 record = {
                     "country": country,
                     "region": "RoW",
-                    "period_start": date(sel["year"], sel["month"], 1).isoformat(),
+                    "period_start": period_start_iso,
                     "period_type": "monthly",
                     "metric": "registration",
                     "units": int(units),
