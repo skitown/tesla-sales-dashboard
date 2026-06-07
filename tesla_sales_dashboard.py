@@ -753,28 +753,39 @@ def _tab_quarter(df: pd.DataFrame) -> None:
              "(that includes Shanghai exports already counted in Europe).",
     )
 
-    # Smaller breakdown row
-    b1, b2, b3 = st.columns(3)
-    b1.metric("Europe (TMC)", f"{europe_total:,}",
-              f"{europe_countries} countries")
-    b2.metric("China retail (CPCA)", f"{china_retail_total:,}",
-              f"{china_retail_months} of 3 months")
-    if row_countries:
-        b3.metric("Rest of World", f"{row_total:,}",
-                  f"{row_countries} of 8 countries (manual)")
-    else:
-        b3.metric("Rest of World", "0",
-                  "manual entry available in sidebar")
+    # Build temporal coverage strings from the actual months in data
+    def _month_list(months_series: pd.Series) -> str:
+        if months_series.empty:
+            return ""
+        labels = sorted(months_series.dt.strftime("%b").unique().tolist(),
+                        key=lambda m: month_cols.index(m) if m in month_cols else 999)
+        return " + ".join(labels)
 
-    # ── Country × month matrix ───────────────────────────────────────────
-    st.markdown("#### Country × month breakdown")
-
-    # Build the quarter's month column labels
+    # Need month_cols available; build them early
     month_cols = []
     for i in range(3):
         mo = (q_start.month + i - 1) % 12 + 1
         yr = q_start.year + ((q_start.month + i - 1) // 12)
         month_cols.append(date(yr, mo, 1).strftime("%b"))
+
+    europe_coverage = _month_list(europe_monthly["period_start"]) or "no months yet"
+    china_coverage = _month_list(china_retail["period_start"]) or "no months yet"
+    row_coverage = _month_list(row_monthly["period_start"]) if row_countries else ""
+
+    # Smaller breakdown row — plain values + gray captions for coverage
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Europe (TMC)", f"{europe_total:,}")
+    b1.caption(europe_coverage)
+    b2.metric("China retail (CPCA)", f"{china_retail_total:,}")
+    b2.caption(china_coverage)
+    b3.metric("Rest of World", f"{row_total:,}")
+    if row_countries:
+        b3.caption(f"{row_coverage} · {row_countries} of 8 countries")
+    else:
+        b3.caption("manual entry available in sidebar")
+
+    # ── Country × month matrix ───────────────────────────────────────────
+    st.markdown("#### Country × month breakdown")
 
     # Assemble matrix data: Europe rows + China (Retail) row + RoW placeholders
     matrix_rows = []
@@ -806,8 +817,21 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     matrix["Q total"] = matrix.sum(axis=1)
     matrix = matrix.sort_values("Q total", ascending=False)
 
+    # Add a Source column: TMC for European countries, CPCA for China retail,
+    # Manual for RoW countries.
+    def _source_for(country: str) -> str:
+        if country == "China (Retail)":
+            return "CPCA"
+        if country in ROW_PLACEHOLDER_COUNTRIES:
+            return "Manual"
+        return "TMC"
+
+    matrix.insert(0, "Source", [_source_for(c) for c in matrix.index])
+
     display = matrix.copy().astype(str)
     for col in matrix.columns:
+        if col == "Source":
+            continue  # leave the Source column as text
         display[col] = matrix[col].apply(
             lambda x: f"{int(x):,}" if x else "—"
         )
@@ -866,27 +890,6 @@ def _tab_quarter(df: pd.DataFrame) -> None:
         )
         st.dataframe(hist_display, width="stretch", hide_index=True,
                      height=35 * (len(hist_display) + 1) + 3)
-
-
-def _tab_latest(df: pd.DataFrame) -> None:
-    st.subheader("Most recent record per country / metric")
-    if df.empty:
-        st.info("No data loaded.")
-        return
-    latest = (
-        df.sort_values("period_start", ascending=False)
-          .drop_duplicates(subset=["country", "metric"], keep="first")
-    )
-    st.dataframe(
-        latest[["country", "region", "period_start", "period_type",
-                "metric", "units", "source", "notes"]],
-        width="stretch", hide_index=True,
-        height=35 * (len(latest) + 1) + 3,
-        column_config={
-            "period_start": st.column_config.DateColumn("Period start"),
-            "units": st.column_config.NumberColumn("Units", format="%d"),
-        },
-    )
 
 
 def _tab_monthly(df: pd.DataFrame) -> None:
@@ -1028,14 +1031,12 @@ def main() -> None:
         _sidebar_refresh()
 
     df = load_combined_df()
-    tab_q, tab_latest, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
-        ["🎯 Quarter tracker", "📊 Latest", "📈 Monthly trends",
+    tab_q, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
+        ["🎯 Quarter tracker", "📈 Monthly trends",
          "🇨🇳 China monthly", "🗂 All data", "ℹ️ About"]
     )
     with tab_q:
         _tab_quarter(df)
-    with tab_latest:
-        _tab_latest(df)
     with tab_monthly:
         _tab_monthly(df)
     with tab_china:
