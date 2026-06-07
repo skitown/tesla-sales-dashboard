@@ -90,13 +90,14 @@ def _last_n_months(n: int) -> list[str]:
 # @TheEVuniverse, @hxm_196_44, etc.). These show as placeholder rows in the
 # country matrix until manual entry is implemented. Sources noted per country.
 ROW_PLACEHOLDER_COUNTRIES = [
-    "Australia",   # @piloly
+    "Australia",   # @piloly (VFACTS, ~5th of following month)
     "Korea",       # @Tslachan
     "Japan",       # @TheEVuniverse
     "Hong Kong",   # @piloly
     "Taiwan",      # @hxm_196_44
     "Colombia",    # @piloly
     "Turkey",      # @piloly
+    "USA",         # no real-time public source; estimate from Cox/KBB analysts
 ]
 
 
@@ -534,6 +535,75 @@ def _sidebar_refresh() -> None:
     st.caption("CPCA wholesale data posts 1-3 days after month-end; "
                "retail breakdown follows ~10 days later. Once a month is enough.")
 
+    # ── Manual entry for Rest-of-World countries ─────────────────────────
+    st.markdown("---")
+    st.subheader("Add RoW data")
+    st.caption(
+        "For countries without an auto-feed (Australia, Korea, Japan, "
+        "Hong Kong, Taiwan, Colombia, Turkey, USA). Paste numbers from "
+        "@piloly / @Tslachan / @TheEVuniverse / @hxm_196_44 X posts."
+    )
+
+    # Build current quarter month options
+    today_d = date.today()
+    cur_q_num = (today_d.month - 1) // 3 + 1
+    q_first_month = (cur_q_num - 1) * 3 + 1
+    quarter_months = []
+    for i in range(3):
+        mo = q_first_month + i
+        quarter_months.append({
+            "label": date(today_d.year, mo, 1).strftime("%B %Y"),
+            "year": today_d.year,
+            "month": mo,
+        })
+
+    with st.form("row_manual_entry", clear_on_submit=True):
+        country = st.selectbox("Country", ROW_PLACEHOLDER_COUNTRIES)
+        month_label = st.selectbox(
+            "Month", [m["label"] for m in quarter_months]
+        )
+        units = st.number_input(
+            "Units (vehicles)", min_value=0, max_value=50_000, value=0,
+            step=1, help="Set to 0 = invalid; the form will reject submission.",
+        )
+        source_url = st.text_input(
+            "Source URL (X post link)",
+            placeholder="https://x.com/piloly/status/...",
+        )
+        submitted = st.form_submit_button("Add entry", width="stretch")
+
+        if submitted:
+            if units <= 0:
+                st.error("Units must be greater than zero.")
+            else:
+                sel = next(m for m in quarter_months
+                           if m["label"] == month_label)
+                record = {
+                    "country": country,
+                    "region": "RoW",
+                    "period_start": date(sel["year"], sel["month"], 1).isoformat(),
+                    "period_type": "monthly",
+                    "metric": "registration",
+                    "units": int(units),
+                    "source": "X aggregator (manual)",
+                    "source_url": source_url or "",
+                    "notes": f"Manual entry for {country} {month_label}",
+                }
+                if upsert(record):
+                    st.success(
+                        f"✓ Added {country} {month_label}: {int(units):,} units"
+                    )
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("Failed to save (unknown SQLite error).")
+
+    st.caption(
+        "**Note:** On Streamlit Cloud, manual entries persist only until "
+        "the container restarts (apps sleep after inactivity). For permanent "
+        "values, add them to `SEED_DATA` in the code and commit."
+    )
+
 
 def _quarter_of(d: date) -> tuple[int, int]:
     """Return (year, quarter_number) for a date."""
@@ -572,11 +642,17 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     in_q = df[(df["period_start"] >= pd.Timestamp(q_start)) &
               (df["period_start"] <= pd.Timestamp(q_end))]
 
-    # Monthly registrations (the main bottom-up signal for non-China markets)
+    # Monthly registrations (the main bottom-up signal for non-China markets).
+    # Split into Europe (TMC auto-pull) vs RoW (manual entry).
     monthly = in_q[(in_q["period_type"] == "monthly") &
                    (in_q["metric"] == "registration")]
-    monthly_total = int(monthly["units"].sum())
-    countries_reporting = monthly["country"].nunique()
+    row_monthly = monthly[monthly["country"].isin(ROW_PLACEHOLDER_COUNTRIES)]
+    europe_monthly = monthly[~monthly["country"].isin(ROW_PLACEHOLDER_COUNTRIES)]
+
+    europe_total = int(europe_monthly["units"].sum())
+    europe_countries = europe_monthly["country"].nunique()
+    row_total = int(row_monthly["units"].sum())
+    row_countries = row_monthly["country"].nunique()
 
     # China monthly wholesale (CPCA total, includes Giga Shanghai exports)
     china_wholesale = in_q[(in_q["country"] == "China") &
@@ -614,28 +690,31 @@ def _tab_quarter(df: pd.DataFrame) -> None:
 
     # ── HEADLINE: ONE total tracked deliveries number ────────────────────
     # The bottom-up sum of all delivery-comparable data points:
-    # Europe registrations + China retail + RoW (manual, not yet populated).
+    # Europe registrations + China retail + RoW manual entries.
     # We do NOT add wholesale here — it's Shanghai production and would
     # double-count exports that already show up in European registrations.
-    row_total = 0  # placeholder; RoW manual entry not implemented
-    total_tracked = monthly_total + china_retail_total + row_total
+    total_tracked = europe_total + china_retail_total + row_total
 
     st.metric(
         f"{quarter_label} total tracked deliveries",
         f"{total_tracked:,}",
         help="Bottom-up sum: Europe registrations (TMC) + China retail (CPCA) "
-             "+ Rest of World. Does NOT include China wholesale (that includes "
-             "Shanghai exports already counted in Europe).",
+             "+ Rest of World (manual entry). Does NOT include China wholesale "
+             "(that includes Shanghai exports already counted in Europe).",
     )
 
     # Smaller breakdown row
     b1, b2, b3 = st.columns(3)
-    b1.metric("Europe (TMC)", f"{monthly_total:,}",
-              f"{countries_reporting} countries")
+    b1.metric("Europe (TMC)", f"{europe_total:,}",
+              f"{europe_countries} countries")
     b2.metric("China retail (CPCA)", f"{china_retail_total:,}",
               f"{china_retail_months} of 3 months")
-    b3.metric("Rest of World", f"{row_total:,}",
-              "manual entry not yet implemented")
+    if row_countries:
+        b3.metric("Rest of World", f"{row_total:,}",
+                  f"{row_countries} of 8 countries (manual)")
+    else:
+        b3.metric("Rest of World", "0",
+                  "manual entry available in sidebar")
 
     # ── Country × month matrix ───────────────────────────────────────────
     st.markdown("#### Country × month breakdown")
