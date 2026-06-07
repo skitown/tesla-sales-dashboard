@@ -570,11 +570,7 @@ def _sidebar_refresh() -> None:
     # ── Manual entry for Rest-of-World countries ─────────────────────────
     st.markdown("---")
     st.subheader("Add RoW data")
-    st.caption(
-        "For countries without an auto-feed (Australia, Korea, Japan, "
-        "Hong Kong, Taiwan, Colombia, Turkey, USA). Paste numbers from "
-        "@piloly / @Tslachan / @TheEVuniverse / @hxm_196_44 X posts."
-    )
+    st.caption("Markets without an auto-feed. Use X aggregator numbers.")
 
     # Build current quarter month options
     today_d = date.today()
@@ -648,12 +644,6 @@ def _sidebar_refresh() -> None:
                 else:
                     st.error("Failed to save (unknown SQLite error).")
 
-    st.caption(
-        "**Note:** On Streamlit Cloud, manual entries persist only until "
-        "the container restarts (apps sleep after inactivity). For permanent "
-        "values, add them to `SEED_DATA` in the code and commit."
-    )
-
 
 def _quarter_of(d: date) -> tuple[int, int]:
     """Return (year, quarter_number) for a date."""
@@ -678,10 +668,8 @@ def _tab_quarter(df: pd.DataFrame) -> None:
 
     st.subheader(f"{quarter_label} delivery tracker")
     st.caption(
-        f"Building a bottom-up estimate of Tesla's {quarter_label} global "
-        f"deliveries from publicly reported registration data. Tesla reports "
-        f"the official global number ~3 days after quarter-end "
-        f"({q_end.strftime('%b %d')})."
+        f"Tesla reports the official {quarter_label} number ~3 days after "
+        f"quarter-end ({q_end.strftime('%b %d')})."
     )
 
     if df.empty:
@@ -842,27 +830,23 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     ref_lines = []
     if prior_year_total:
         ref_lines.append(
-            f"Q{cur_q} {cur_year - 1} reported delivery: **{prior_year_total:,}**"
+            f"Q{cur_q} {cur_year - 1}: **{prior_year_total:,}**"
         )
     if prev_q_total:
         ref_lines.append(
-            f"Previous quarter (Q{prev_q} {prev_year}): **{prev_q_total:,}**"
+            f"Q{prev_q} {prev_year}: **{prev_q_total:,}**"
         )
     if ref_lines:
-        st.caption("Reference (global, Tesla IR) — " + " · ".join(ref_lines) +
-                   ". Tracked total above is partial because we only cover "
-                   "the markets with public data.")
+        st.caption("Tesla reported — " + " · ".join(ref_lines))
 
     # ── Shanghai production (leading indicator, not in delivery total) ───
     if not china_wholesale.empty:
         st.markdown("---")
         st.markdown("#### Shanghai production (leading indicator)")
         st.caption(
-            "CPCA wholesale = Giga Shanghai's monthly output. Includes "
-            "domestic deliveries AND vehicles in transit to export markets. "
-            "Leads delivery numbers by 1-2 months because exported vehicles "
-            "show up in Europe's registration data later. Useful as a "
-            "forward signal — **do NOT add to the tracked total above**."
+            "Giga Shanghai's monthly output — domestic deliveries + exports. "
+            "Leads global deliveries by 1-2 months. **Don't add to the "
+            "tracked total above.**"
         )
         cw_display = china_wholesale.copy().sort_values("period_start")
         cw_display["Month"] = cw_display["period_start"].dt.strftime("%b %Y")
@@ -873,7 +857,7 @@ def _tab_quarter(df: pd.DataFrame) -> None:
                      height=35 * (len(cw_display) + 1) + 3)
 
     # ── Historical Tesla IR context ──────────────────────────────────────
-    st.markdown("#### Tesla reported quarterly deliveries (for context)")
+    st.markdown("#### Tesla reported quarterly deliveries")
     hist = df[
         (df["country"] == "Global") &
         (df["metric"] == "delivery")
@@ -943,10 +927,8 @@ def _tab_china(df: pd.DataFrame) -> None:
         width="stretch", hide_index=True,
         height=35 * (len(china) + 1) + 3,
     )
-    st.caption("**Wholesale** is CPCA's total figure for Giga Shanghai — "
-               "includes both domestic deliveries and exports to Europe and "
-               "elsewhere. **Retail** is CPCA domestic only. The gap between "
-               "the two is roughly equal to Tesla's monthly Shanghai exports.")
+    st.caption("Wholesale = domestic + exports. Retail = domestic only. "
+               "The gap ≈ Shanghai exports.")
 
 
 def _tab_all(df: pd.DataFrame) -> None:
@@ -996,17 +978,11 @@ def _tab_about() -> None:
   et al.) by a day or two because the community validates each entry
   before approving it. For a real-time read, the X feeds are faster;
   this dashboard prioritizes validated data over speed.
-- CnEVPost stopped publishing weekly Tesla insurance registrations in
-  October 2025; the dashboard switched to monthly CPCA data published
-  in their Tesla category. If they change URL patterns again the scraper
-  fails closed (no rows inserted) — fix the regexes in
-  `_extract_china_wholesale` / `_extract_china_retail`.
 - For the final month of any quarter, China retail data arrives AFTER
   Tesla's own quarterly announcement (Tesla announces ~3 days after
-  quarter-end; CPCA retail follows ~10 days after). That means the
-  bottom-up tracker is most useful through month 2 of each quarter,
-  with Tesla's own number being the final word for month 3.
-- SQLite at `data/tesla_sales.db` is local-only.
+  quarter-end; CPCA retail follows ~10 days after). The bottom-up tracker
+  is most useful through month 2 of each quarter; Tesla's own number is
+  the final word for month 3.
 """)
 
 
@@ -1018,10 +994,8 @@ def main() -> None:
     )
     st.title("🚗 Tesla Quarterly Delivery Tracker")
     st.caption(
-        "A bottom-up estimate of Tesla's quarterly global deliveries, "
-        "aggregated from European national agencies (via the TMC community "
-        "sheet), China's CPCA (via CnEVPost), Tesla's own IR figures, and "
-        "manual entries for other markets."
+        "Bottom-up estimate of Tesla's quarterly global deliveries from "
+        "public registration data."
     )
 
     init_db()
