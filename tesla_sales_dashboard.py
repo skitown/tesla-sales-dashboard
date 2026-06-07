@@ -783,6 +783,8 @@ def _tab_quarter(df: pd.DataFrame) -> None:
               "manual entry available in sidebar")
 
     # ── Country × month matrix ───────────────────────────────────────────
+    st.markdown("<div style='margin-top: 1.5rem;'></div>",
+                unsafe_allow_html=True)
     st.markdown("#### Country × month breakdown")
 
     # Assemble matrix data: Europe rows + China (Retail) row + RoW placeholders
@@ -887,21 +889,38 @@ def _tab_quarter(df: pd.DataFrame) -> None:
 
 
 def _tab_monthly(df: pd.DataFrame) -> None:
-    st.subheader("Monthly registrations by country")
-    monthly = df[(df["period_type"] == "monthly") &
-                 (df["metric"] == "registration")]
+    st.subheader("Monthly trends by country")
+
+    # Include all delivery-comparable monthly data:
+    # - European registrations (TMC)
+    # - China retail (CPCA, relabeled as "China (Retail)")
+    # - RoW manual entries (which are also metric=registration)
+    europe_and_row = df[(df["period_type"] == "monthly") &
+                        (df["metric"] == "registration")]
+    china_retail = df[(df["country"] == "China") &
+                      (df["period_type"] == "monthly") &
+                      (df["metric"] == "retail")].copy()
+    if not china_retail.empty:
+        china_retail["country"] = "China (Retail)"
+
+    monthly = pd.concat([europe_and_row, china_retail], ignore_index=True)
     if monthly.empty:
-        st.info("No monthly registration data yet. Add some via the sidebar.")
+        st.info("No monthly data yet.")
         return
+
     countries = sorted(monthly["country"].unique())
-    default = countries[: min(6, len(countries))]
+    # Default to top 6 by total units so the most impactful markets show first
+    totals = monthly.groupby("country")["units"].sum().sort_values(ascending=False)
+    default = totals.index[: min(6, len(totals))].tolist()
+
     chosen = st.multiselect("Countries", countries, default=default)
     sub = monthly[monthly["country"].isin(chosen)].sort_values("period_start")
     if sub.empty:
         return
     fig = px.line(
         sub, x="period_start", y="units", color="country", markers=True,
-        title="Tesla monthly registrations (national agencies)",
+        title="Tesla monthly deliveries — Europe (TMC) + China retail (CPCA) "
+              "+ RoW (manual)",
     )
     fig.update_layout(
         height=480, hovermode="x unified",
