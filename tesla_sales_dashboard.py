@@ -91,11 +91,11 @@ def _last_n_months(n: int) -> list[str]:
 # country matrix until manual entry is implemented. Sources noted per country.
 ROW_PLACEHOLDER_COUNTRIES = [
     "Australia",   # @piloly (VFACTS, ~5th of following month)
-    "Korea",       # @Tslachan
-    "Japan",       # @TheEVuniverse
-    "Hong Kong",   # @piloly
-    "Taiwan",      # @hxm_196_44
     "Colombia",    # @piloly
+    "Hong Kong",   # @piloly
+    "Japan",       # @TheEVuniverse
+    "Korea",       # @Tslachan
+    "Taiwan",      # @hxm_196_44
     "Turkey",      # @piloly
     "USA",         # no real-time public source; estimate from Cox/KBB analysts
 ]
@@ -760,21 +760,27 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     china_coverage = _month_list(china_retail["period_start"]) or "no months yet"
     row_coverage = _month_list(row_monthly["period_start"]) if row_countries else ""
 
-    # Smaller breakdown row — delta_color='off' renders descriptor as plain
-    # gray text tucked under each number (no arrow, no green/red pill).
+    # Smaller breakdown row — rendered as markdown so we get the tight
+    # label/value/caption stack without st.metric's delta arrow.
+    def _mini(col, label: str, value: str, descriptor: str) -> None:
+        col.markdown(
+            f"<div style='font-size:0.875rem;opacity:0.7;'>{label}</div>"
+            f"<div style='font-size:1.75rem;font-weight:400;line-height:1.2;"
+            f"margin-top:0.15rem;'>{value}</div>"
+            f"<div style='font-size:0.875rem;opacity:0.55;margin-top:0.15rem;'>"
+            f"{descriptor}</div>",
+            unsafe_allow_html=True,
+        )
+
     b1, b2, b3 = st.columns(3)
-    b1.metric("Europe (TMC)", f"{europe_total:,}",
-              europe_coverage, delta_color="off")
-    b2.metric("China retail (CPCA)", f"{china_retail_total:,}",
-              china_coverage, delta_color="off")
+    _mini(b1, "Europe (TMC)", f"{europe_total:,}", europe_coverage)
+    _mini(b2, "China retail (CPCA)", f"{china_retail_total:,}", china_coverage)
     if row_countries:
-        b3.metric("Rest of World", f"{row_total:,}",
-                  f"{row_coverage} · {row_countries} of 8 countries",
-                  delta_color="off")
+        _mini(b3, "Rest of World", f"{row_total:,}",
+              f"{row_coverage} · {row_countries} of 8 countries")
     else:
-        b3.metric("Rest of World", f"{row_total:,}",
-                  "manual entry available in sidebar",
-                  delta_color="off")
+        _mini(b3, "Rest of World", f"{row_total:,}",
+              "manual entry available in sidebar")
 
     # ── Country × month matrix ───────────────────────────────────────────
     st.markdown("#### Country × month breakdown")
