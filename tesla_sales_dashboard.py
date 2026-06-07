@@ -760,17 +760,21 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     china_coverage = _month_list(china_retail["period_start"]) or "no months yet"
     row_coverage = _month_list(row_monthly["period_start"]) if row_countries else ""
 
-    # Smaller breakdown row — plain values + gray captions for coverage
+    # Smaller breakdown row — delta_color='off' renders descriptor as plain
+    # gray text tucked under each number (no arrow, no green/red pill).
     b1, b2, b3 = st.columns(3)
-    b1.metric("Europe (TMC)", f"{europe_total:,}")
-    b1.caption(europe_coverage)
-    b2.metric("China retail (CPCA)", f"{china_retail_total:,}")
-    b2.caption(china_coverage)
-    b3.metric("Rest of World", f"{row_total:,}")
+    b1.metric("Europe (TMC)", f"{europe_total:,}",
+              europe_coverage, delta_color="off")
+    b2.metric("China retail (CPCA)", f"{china_retail_total:,}",
+              china_coverage, delta_color="off")
     if row_countries:
-        b3.caption(f"{row_coverage} · {row_countries} of 8 countries")
+        b3.metric("Rest of World", f"{row_total:,}",
+                  f"{row_coverage} · {row_countries} of 8 countries",
+                  delta_color="off")
     else:
-        b3.caption("manual entry available in sidebar")
+        b3.metric("Rest of World", f"{row_total:,}",
+                  "manual entry available in sidebar",
+                  delta_color="off")
 
     # ── Country × month matrix ───────────────────────────────────────────
     st.markdown("#### Country × month breakdown")
