@@ -522,37 +522,57 @@ def fetch_cnevpost_monthly(limit: int = 12) -> list[dict]:
 
 def _sidebar_refresh() -> None:
     st.header("Data sources")
-    st.caption("European data pulls live from the TMC community sheet. "
-               "China weekly pulls from CnEVPost. Both can be refreshed below.")
+    st.caption(
+        "European registrations pull from the TMC community sheet. "
+        "China monthly data scrapes from CnEVPost. Hit refresh to pull "
+        "the latest of both."
+    )
 
-    if st.button("Refresh European data (TMC sheet)", width="stretch"):
+    if st.button("Refresh all data sources", width="stretch", type="primary"):
+        msg_parts, warnings = [], []
+
+        # TMC community sheet (European registrations)
         fetch_community_sheet.clear()
-        with st.spinner("Pulling TMC community sheet..."):
+        with st.spinner("Pulling TMC sheet and CnEVPost..."):
             community = fetch_community_sheet()
+            fetch_cnevpost_monthly.clear()
+            cn_records = fetch_cnevpost_monthly(limit=12)
+
         if community is not None and not community.empty:
             n_rows = len(community)
             n_countries = community["country"].nunique()
-            st.success(f"Loaded {n_rows} model-country-month rows across "
-                       f"{n_countries} countries.")
+            msg_parts.append(
+                f"**TMC:** {n_rows:,} rows · {n_countries} countries"
+            )
         else:
-            st.warning("No data returned — check your API key and that the "
-                       "Sheets API is enabled.")
-        st.rerun()
-    st.caption("Cached for 1 hour. Click to force a fresh pull.")
+            warnings.append("TMC: no data returned (check API key)")
 
-    if st.button("Refresh China monthly (CnEVPost)", width="stretch"):
-        fetch_cnevpost_monthly.clear()
-        with st.spinner("Scraping CnEVPost Tesla category..."):
-            new = fetch_cnevpost_monthly(limit=12)
-        n = sum(1 for r in new if upsert(r))
-        if n:
-            st.success(f"Inserted/updated {n} monthly records (wholesale + retail)")
-            st.cache_data.clear()
-            st.rerun()
+        # CnEVPost monthly Tesla China
+        n_cn = sum(1 for r in cn_records if upsert(r))
+        if n_cn:
+            msg_parts.append(
+                f"**CnEVPost:** {n_cn} monthly record{'s' if n_cn != 1 else ''}"
+            )
         else:
-            st.info("No new records (already current, or parser couldn't match the page).")
-    st.caption("CPCA wholesale data posts 1-3 days after month-end; "
-               "retail breakdown follows ~10 days later. Once a month is enough.")
+            warnings.append("CnEVPost: no new records "
+                            "(already current or parser miss)")
+
+        if msg_parts:
+            st.success(" · ".join(msg_parts))
+        if warnings:
+            for w in warnings:
+                st.info(w)
+
+        st.cache_data.clear()
+        st.rerun()
+
+    st.caption(
+        "**When sources update:** European agencies (KBA, OFV, SMMT, etc.) "
+        "report in the first week of each month for the prior month; the TMC "
+        "sheet typically reflects them within a day or two. CnEVPost posts "
+        "CPCA wholesale 1-3 days after month-end, and the retail breakdown "
+        "~10 days later. Hourly cache; refresh forces a fresh pull."
+    )
 
     # ── Manual entry for Rest-of-World countries ─────────────────────────
     st.markdown("---")
