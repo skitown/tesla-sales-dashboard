@@ -522,13 +522,8 @@ def fetch_cnevpost_monthly(limit: int = 12) -> list[dict]:
 
 def _sidebar_refresh() -> None:
     st.header("Data sources")
-    st.caption(
-        "European registrations pull from the TMC community sheet. "
-        "China monthly data scrapes from CnEVPost. Hit refresh to pull "
-        "the latest of both."
-    )
 
-    if st.button("Refresh all data sources", width="stretch", type="primary"):
+    if st.button("Refresh all data sources", width="stretch"):
         msg_parts, warnings = [], []
 
         # TMC community sheet (European registrations)
@@ -567,11 +562,9 @@ def _sidebar_refresh() -> None:
         st.rerun()
 
     st.caption(
-        "**When sources update:** European agencies (KBA, OFV, SMMT, etc.) "
-        "report in the first week of each month for the prior month; the TMC "
-        "sheet typically reflects them within a day or two. CnEVPost posts "
-        "CPCA wholesale 1-3 days after month-end, and the retail breakdown "
-        "~10 days later. Hourly cache; refresh forces a fresh pull."
+        "**Europe** via TMC sheet — agencies report the first week of each "
+        "month. **China** via CnEVPost — CPCA wholesale ~3 days after "
+        "month-end, retail ~10 days later. Cached for 1 hour."
     )
 
     # ── Manual entry for Rest-of-World countries ─────────────────────────
@@ -1016,15 +1009,16 @@ def _tab_about() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Tesla Regional Sales",
+        page_title="Tesla Quarterly Delivery Tracker",
         layout="wide",
         page_icon="🚗",
     )
-    st.title("🚗 Tesla Regional Sales Dashboard")
+    st.title("🚗 Tesla Quarterly Delivery Tracker")
     st.caption(
-        "Tesla vehicle registrations and deliveries by country, aggregated "
-        "from national agencies, CnEVPost weekly insurance data, and "
-        "Tesla IR. Local SQLite store."
+        "A bottom-up estimate of Tesla's quarterly global deliveries, "
+        "aggregated from European national agencies (via the TMC community "
+        "sheet), China's CPCA (via CnEVPost), Tesla's own IR figures, and "
+        "manual entries for other markets."
     )
 
     init_db()
