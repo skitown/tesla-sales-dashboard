@@ -86,6 +86,20 @@ def _last_n_months(n: int) -> list[str]:
     return out
 
 
+# Rest-of-World countries tracked by X aggregators (@piloly, @Tslachan,
+# @TheEVuniverse, @hxm_196_44, etc.). These show as placeholder rows in the
+# country matrix until manual entry is implemented. Sources noted per country.
+ROW_PLACEHOLDER_COUNTRIES = [
+    "Australia",   # @piloly
+    "Korea",       # @Tslachan
+    "Japan",       # @TheEVuniverse
+    "Hong Kong",   # @piloly
+    "Taiwan",      # @hxm_196_44
+    "Colombia",    # @piloly
+    "Turkey",      # @piloly
+]
+
+
 # ---- Seed data ----
 # European registrations are now pulled live from the TMC community sheet
 # (see fetch_community_sheet below). The local seed only carries data the
@@ -115,15 +129,21 @@ SEED_DATA = [
      "source": "Tesla IR", "source_url": "https://ir.tesla.com",
      "notes": "Q1 2026 reported deliveries; missed 365,645 consensus"},
 
-    # China weekly seed (CnEVPost; will be extended by the scraper)
-    {"country": "China", "region": "China", "period_start": "2025-09-08",
-     "period_type": "weekly", "metric": "insurance", "units": 15350,
-     "source": "CnEVPost", "source_url": "https://cnevpost.com",
-     "notes": "Week ending Sept 14, 2025"},
-    {"country": "China", "region": "China", "period_start": "2025-09-15",
-     "period_type": "weekly", "metric": "insurance", "units": 17300,
-     "source": "CnEVPost", "source_url": "https://cnevpost.com",
-     "notes": "Week ending Sept 21, 2025; 12-week high"},
+    # Tesla China monthly seed (CPCA via CnEVPost). These will be auto-extended
+    # by fetch_cnevpost_monthly. Wholesale = CPCA total (includes Giga Shanghai
+    # exports); retail = CPCA domestic-only.
+    {"country": "China", "region": "China", "period_start": "2026-04-01",
+     "period_type": "monthly", "metric": "wholesale", "units": 79478,
+     "source": "CPCA via CnEVPost", "source_url": "https://cnevpost.com",
+     "notes": "April 2026 wholesale (includes Giga Shanghai exports)"},
+    {"country": "China", "region": "China", "period_start": "2026-05-01",
+     "period_type": "monthly", "metric": "wholesale", "units": 85982,
+     "source": "CPCA via CnEVPost", "source_url": "https://cnevpost.com",
+     "notes": "May 2026 wholesale; +39.4% YoY; highest of 2026 so far"},
+    {"country": "China", "region": "China", "period_start": "2026-04-01",
+     "period_type": "monthly", "metric": "retail", "units": 25956,
+     "source": "CPCA via CnEVPost", "source_url": "https://cnevpost.com",
+     "notes": "April 2026 domestic retail (excludes 53,522 exports)"},
 ]
 
 
@@ -340,114 +360,139 @@ def load_combined_df() -> pd.DataFrame:
     return pd.concat([agg, local], ignore_index=True)
 
 
-# ---- CnEVPost scraper ----
+# ---- CnEVPost monthly Tesla China scraper ----
+#
+# CnEVPost stopped publishing weekly Tesla insurance registrations in Oct 2025.
+# What they DO still publish, monthly, ~3-5 days after each month-end:
+#
+#   - "Tesla China {Month} wholesale volume reaches {N} units" (CPCA wholesale,
+#     includes Giga Shanghai exports). URL: /tesla-china-{month}-{year}-wholesale
+#   - "Tesla's {Month} China retail breakdown" (CPCA domestic retail, by model).
+#     URL: /tesla-{month}-{year}-china-retail-breakdown
+#
+# Wholesale comes out first. Retail breakdown follows a few days later.
 
-def _parse_week_ending(url: str, html: str, pub_date: date) -> Optional[date]:
-    """Extract the week-ending date. URL slug is the most reliable signal."""
-    # URL: .../china-ev-insurance-registrations-week-ending-sept-14-2025/
-    m = re.search(r"week-ending-([a-z]+)-(\d{1,2})-(\d{4})", url, re.I)
-    if m:
-        try:
-            return datetime.strptime(
-                f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}", "%b %d %Y"
-            ).date()
-        except ValueError:
-            pass
-    # Title/body fallback: "week ending Sept 14"
-    m = re.search(r"week ending\s+([A-Za-z]+)\s+(\d{1,2})", html, re.I)
-    if m:
-        try:
-            return datetime.strptime(
-                f"{m.group(1)[:3]} {m.group(2)} {pub_date.year}", "%b %d %Y"
-            ).date()
-        except ValueError:
-            pass
+_MONTH_NAME_TO_NUM = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+    "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+
+
+def _extract_china_wholesale(html: str) -> Optional[int]:
+    """Pull the wholesale number from a tesla-china-{month}-{year}-wholesale
+    post. The number is reliably in the title."""
+    title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
+    title = title_m.group(1) if title_m else ""
+    # "Tesla China May wholesale volume reaches 85,982 units, ..."
+    patterns = [
+        r"wholesale\s+volume\s+(?:reache[sd]|hits?)\s+(\d{1,3}(?:,\d{3})+)",
+        r"wholesale\s+(?:sales\s+)?reache[sd]\s+(\d{1,3}(?:,\d{3})+)",
+        r"Tesla\s+China\s+sold\s+(\d{1,3}(?:,\d{3})+)\s+vehicles",
+    ]
+    for pat in patterns:
+        m = re.search(pat, title, re.I)
+        if m:
+            try:
+                val = int(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            # Sanity: Tesla China monthly wholesale is roughly 30k-100k.
+            if 10_000 <= val <= 200_000:
+                return val
     return None
 
 
-def _extract_tesla_units(html: str) -> Optional[int]:
-    """Find the weekly Tesla insurance number. Title first, then body."""
-    title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
-    title = title_m.group(1) if title_m else ""
-    # Title pattern is consistent: "...insurance registrations for week ending
-    # Sept 21: Nio Inc 6,670, Tesla 17,300, Xiaomi 10,800..." Only trust
-    # the title number when the title is clearly about insurance registrations.
-    m = None
-    if re.search(r"insurance registrations", title, re.I):
-        m = re.search(r"Tesla\s+(\d{1,3}(?:,\d{3})+|\d{4,5})", title)
-    if not m:
-        # Body fallback, anchored by an action verb to avoid false positives
-        m = re.search(
-            r"Tesla(?:\s*\([^)]+\))?\s+(?:had|recorded|reached|saw|posted)\s+"
-            r"(\d{1,3}(?:,\d{3})+|\d{4,5})\s+(?:insurance|new|vehicle)",
-            html,
-        )
-    if not m:
-        return None
-    try:
-        units = int(m.group(1).replace(",", ""))
-    except ValueError:
-        return None
-    # Sanity: Tesla weekly China is roughly 5k-25k. Bound loosely.
-    if 1000 <= units <= 100_000:
-        return units
+def _extract_china_retail(html: str) -> Optional[int]:
+    """Pull the retail number from a tesla-{month}-{year}-china-retail-breakdown
+    post. The total is usually in the body in the format 'Tesla's {N} retail
+    sales in China' or 'Model Y accounted for X% of Tesla's {N} retail sales'."""
+    patterns = [
+        r"Tesla'?s?\s+(\d{1,3}(?:,\d{3})+)\s+retail\s+sales\s+in\s+China",
+        r"Tesla'?s?\s+domestic\s+retail\s+sales\s+in\s+China\s+(?:in\s+\w+\s+)?"
+        r"(?:were|came in at|stood at|totaled|reached)\s+(\d{1,3}(?:,\d{3})+)",
+        r"retail\s+sales\s+in\s+China\s+(?:for\s+\w+\s+)?"
+        r"(?:totaled|came in at|stood at|reached|were)\s+(\d{1,3}(?:,\d{3})+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, html, re.I)
+        if m:
+            try:
+                val = int(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            # Sanity: Tesla China monthly retail is roughly 15k-100k.
+            if 5_000 <= val <= 150_000:
+                return val
     return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_cnevpost(limit: int = 10) -> list[dict]:
-    """Scrape the CnEVPost insurance-registrations tag page for recent
-    weekly posts. Returns a list of upsertable record dicts."""
+def fetch_cnevpost_monthly(limit: int = 12) -> list[dict]:
+    """Scrape CnEVPost's Tesla category for monthly wholesale + retail posts."""
     try:
-        req = urllib.request.Request(CNEVPOST_TAG_URL, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(
+            "https://cnevpost.com/tesla/",
+            headers={"User-Agent": USER_AGENT},
+        )
         with urllib.request.urlopen(req, timeout=20) as resp:
             index_html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
-        st.warning(f"CnEVPost index fetch failed: {e}")
+        st.warning(f"CnEVPost Tesla index fetch failed: {e}")
         return []
 
-    url_pat = (
-        r'href="(https://cnevpost\.com/(\d{4})/(\d{2})/(\d{2})/'
-        r'[^"]*insurance-registrations[^"]*)"'
+    wholesale_pat = re.compile(
+        r'href="(https://cnevpost\.com/\d{4}/\d{2}/\d{2}/'
+        r'tesla-china-([a-z]+)-(\d{4})-wholesale/?)"',
+        re.I,
     )
-    seen, posts = set(), []
-    for m in re.finditer(url_pat, index_html):
-        url = m.group(1)
-        if url in seen:
+    retail_pat = re.compile(
+        r'href="(https://cnevpost\.com/\d{4}/\d{2}/\d{2}/'
+        r'tesla-([a-z]+)-(\d{4})-china-retail-breakdown/?)"',
+        re.I,
+    )
+
+    posts, seen = [], set()
+    for m in wholesale_pat.finditer(index_html):
+        if m.group(1) in seen:
             continue
-        seen.add(url)
-        posts.append({
-            "url": url,
-            "pub_date": date(int(m.group(2)), int(m.group(3)), int(m.group(4))),
-        })
-        if len(posts) >= limit:
-            break
+        seen.add(m.group(1))
+        posts.append({"url": m.group(1), "month": m.group(2),
+                      "year": int(m.group(3)), "metric": "wholesale"})
+    for m in retail_pat.finditer(index_html):
+        if m.group(1) in seen:
+            continue
+        seen.add(m.group(1))
+        posts.append({"url": m.group(1), "month": m.group(2),
+                      "year": int(m.group(3)), "metric": "retail"})
+    posts = posts[:limit]
 
     records = []
     for p in posts:
+        month_num = _MONTH_NAME_TO_NUM.get(p["month"].lower())
+        if not month_num:
+            continue
         try:
             req = urllib.request.Request(p["url"], headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=20) as resp:
                 post_html = resp.read().decode("utf-8", errors="replace")
         except Exception:
             continue
-
-        week_end = _parse_week_ending(p["url"], post_html, p["pub_date"])
-        units = _extract_tesla_units(post_html)
-        if not week_end or not units:
+        units = (_extract_china_wholesale(post_html) if p["metric"] == "wholesale"
+                 else _extract_china_retail(post_html))
+        if not units:
             continue
-
-        period_start = week_end - timedelta(days=6)
         records.append({
             "country": "China",
             "region": "China",
-            "period_start": period_start.isoformat(),
-            "period_type": "weekly",
-            "metric": "insurance",
+            "period_start": date(p["year"], month_num, 1).isoformat(),
+            "period_type": "monthly",
+            "metric": p["metric"],
             "units": units,
-            "source": "CnEVPost",
+            "source": "CPCA via CnEVPost",
             "source_url": p["url"],
-            "notes": f"Week ending {week_end.isoformat()}",
+            "notes": f"Tesla China {p['metric']} for {p['month']} {p['year']}",
         })
 
     return records
@@ -460,7 +505,7 @@ def _sidebar_refresh() -> None:
     st.caption("European data pulls live from the TMC community sheet. "
                "China weekly pulls from CnEVPost. Both can be refreshed below.")
 
-    if st.button("Refresh European data (TMC sheet)", use_container_width=True):
+    if st.button("Refresh European data (TMC sheet)", width="stretch"):
         fetch_community_sheet.clear()
         with st.spinner("Pulling TMC community sheet..."):
             community = fetch_community_sheet()
@@ -475,18 +520,19 @@ def _sidebar_refresh() -> None:
         st.rerun()
     st.caption("Cached for 1 hour. Click to force a fresh pull.")
 
-    if st.button("Refresh China weekly (CnEVPost)", use_container_width=True):
-        with st.spinner("Scraping CnEVPost..."):
-            new = fetch_cnevpost(limit=10)
+    if st.button("Refresh China monthly (CnEVPost)", width="stretch"):
+        fetch_cnevpost_monthly.clear()
+        with st.spinner("Scraping CnEVPost Tesla category..."):
+            new = fetch_cnevpost_monthly(limit=12)
         n = sum(1 for r in new if upsert(r))
         if n:
-            st.success(f"Inserted/updated {n} weekly records")
+            st.success(f"Inserted/updated {n} monthly records (wholesale + retail)")
             st.cache_data.clear()
             st.rerun()
         else:
             st.info("No new records (already current, or parser couldn't match the page).")
-    st.caption("New data posts Mon/Tue Beijing time "
-               "(Sun night / Mon morning US Pacific). Once a week is enough.")
+    st.caption("CPCA wholesale data posts 1-3 days after month-end; "
+               "retail breakdown follows ~10 days later. Once a month is enough.")
 
 
 def _quarter_of(d: date) -> tuple[int, int]:
@@ -532,12 +578,20 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     monthly_total = int(monthly["units"].sum())
     countries_reporting = monthly["country"].nunique()
 
-    # China weekly insurance (separate retail proxy; don't add to monthly)
-    china_weekly = in_q[(in_q["country"] == "China") &
-                        (in_q["period_type"] == "weekly") &
-                        (in_q["metric"] == "insurance")]
-    china_weekly_total = int(china_weekly["units"].sum())
-    china_weeks = len(china_weekly)
+    # China monthly wholesale (CPCA total, includes Giga Shanghai exports)
+    china_wholesale = in_q[(in_q["country"] == "China") &
+                           (in_q["period_type"] == "monthly") &
+                           (in_q["metric"] == "wholesale")]
+    china_wholesale_total = int(china_wholesale["units"].sum())
+    china_wholesale_months = china_wholesale["period_start"].nunique()
+
+    # China monthly retail (CPCA domestic-only; the cleaner global-delivery
+    # comparable, but published a few days later than wholesale)
+    china_retail = in_q[(in_q["country"] == "China") &
+                        (in_q["period_type"] == "monthly") &
+                        (in_q["metric"] == "retail")]
+    china_retail_total = int(china_retail["units"].sum())
+    china_retail_months = china_retail["period_start"].nunique()
 
     # Reference: Tesla's reported delivery for the same quarter last year
     prior_year_q = df[
@@ -558,72 +612,114 @@ def _tab_quarter(df: pd.DataFrame) -> None:
     ]
     prev_q_total = int(prev_q_row["units"].iloc[0]) if not prev_q_row.empty else None
 
-    # Headline metrics
-    c1, c2, c3 = st.columns(3)
-    c1.metric(
-        f"{quarter_label} Europe-tracked",
-        f"{monthly_total:,}",
-        f"{countries_reporting} countries reporting",
-    )
-    c2.metric(
-        f"{quarter_label} China weekly (CnEVPost)",
-        f"{china_weekly_total:,}",
-        f"{china_weeks} weeks of insurance data",
-    )
-    if prior_year_total:
-        c3.metric(
-            f"Q{cur_q} {cur_year - 1} reported (Tesla IR)",
-            f"{prior_year_total:,}",
-            "global delivery total",
-        )
+    # ── HEADLINE: ONE total tracked deliveries number ────────────────────
+    # The bottom-up sum of all delivery-comparable data points:
+    # Europe registrations + China retail + RoW (manual, not yet populated).
+    # We do NOT add wholesale here — it's Shanghai production and would
+    # double-count exports that already show up in European registrations.
+    row_total = 0  # placeholder; RoW manual entry not implemented
+    total_tracked = monthly_total + china_retail_total + row_total
 
-    if prev_q_total:
-        st.caption(
-            f"Previous quarter (Q{prev_q} {prev_year}) reported delivery: "
-            f"**{prev_q_total:,}** (global, Tesla IR). The tracked numbers above "
-            f"are a partial bottom-up read of {quarter_label}; they will always be "
-            f"smaller than the global figure because they only cover the markets "
-            f"with public registration data."
-        )
+    st.metric(
+        f"{quarter_label} total tracked deliveries",
+        f"{total_tracked:,}",
+        help="Bottom-up sum: Europe registrations (TMC) + China retail (CPCA) "
+             "+ Rest of World. Does NOT include China wholesale (that includes "
+             "Shanghai exports already counted in Europe).",
+    )
 
-    # Coverage matrix: country x month
-    st.markdown("#### Country × month matrix (monthly registrations)")
-    if monthly.empty:
-        st.info("No monthly registrations recorded in this quarter yet.")
-    else:
+    # Smaller breakdown row
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Europe (TMC)", f"{monthly_total:,}",
+              f"{countries_reporting} countries")
+    b2.metric("China retail (CPCA)", f"{china_retail_total:,}",
+              f"{china_retail_months} of 3 months")
+    b3.metric("Rest of World", f"{row_total:,}",
+              "manual entry not yet implemented")
+
+    # ── Country × month matrix ───────────────────────────────────────────
+    st.markdown("#### Country × month breakdown")
+
+    # Build the quarter's month column labels
+    month_cols = []
+    for i in range(3):
+        mo = (q_start.month + i - 1) % 12 + 1
+        yr = q_start.year + ((q_start.month + i - 1) // 12)
+        month_cols.append(date(yr, mo, 1).strftime("%b"))
+
+    # Assemble matrix data: Europe rows + China (Retail) row + RoW placeholders
+    matrix_rows = []
+    if not monthly.empty:
         m = monthly.copy()
         m["month_label"] = m["period_start"].dt.strftime("%b")
-        # Build column order matching quarter months
-        month_cols = []
-        for i in range(3):
-            mo = (q_start.month + i - 1) % 12 + 1
-            yr = q_start.year + ((q_start.month + i - 1) // 12)
-            month_cols.append(date(yr, mo, 1).strftime("%b"))
-        matrix = m.pivot_table(
-            index="country", columns="month_label", values="units",
-            aggfunc="sum", fill_value=0,
-        ).reindex(columns=month_cols, fill_value=0)
-        matrix["Q total"] = matrix.sum(axis=1)
-        # Display 0s as dashes
-        display = matrix.replace(0, "—").astype(str)
-        for col in matrix.columns:
-            display[col] = matrix[col].apply(
-                lambda x: f"{int(x):,}" if x else "—"
-            )
-        st.dataframe(display, use_container_width=True)
+        for (country, label), grp in m.groupby(["country", "month_label"]):
+            matrix_rows.append({"country": country, "month_label": label,
+                                "units": int(grp["units"].sum())})
 
-    # China weekly bars
-    if not china_weekly.empty:
-        st.markdown("#### China weekly insurance (CnEVPost, this quarter)")
-        cw = china_weekly.sort_values("period_start")
-        fig = px.bar(
-            cw, x="period_start", y="units",
-            title=f"China weekly insurance registrations during {quarter_label}",
+    if not china_retail.empty:
+        cr = china_retail.copy()
+        cr["month_label"] = cr["period_start"].dt.strftime("%b")
+        for (_, label), grp in cr.groupby(["country", "month_label"]):
+            matrix_rows.append({"country": "China (Retail)",
+                                "month_label": label,
+                                "units": int(grp["units"].sum())})
+
+    # RoW placeholders — visible coverage gaps for non-Europe/China markets
+    for country in ROW_PLACEHOLDER_COUNTRIES:
+        # Add a stub row for the first month so the country shows up
+        matrix_rows.append({"country": country,
+                            "month_label": month_cols[0], "units": 0})
+
+    mdf = pd.DataFrame(matrix_rows)
+    matrix = (mdf.pivot_table(index="country", columns="month_label",
+                              values="units", aggfunc="sum", fill_value=0)
+                .reindex(columns=month_cols, fill_value=0))
+    matrix["Q total"] = matrix.sum(axis=1)
+    matrix = matrix.sort_values("Q total", ascending=False)
+
+    display = matrix.copy().astype(str)
+    for col in matrix.columns:
+        display[col] = matrix[col].apply(
+            lambda x: f"{int(x):,}" if x else "—"
         )
-        fig.update_layout(height=320, yaxis_title="Units", xaxis_title="")
-        st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(display, width="stretch",
+                 height=35 * (len(display) + 1) + 3)
 
-    # Historical quarterly Tesla IR context
+    # ── Reference comparison (less prominent) ────────────────────────────
+    ref_lines = []
+    if prior_year_total:
+        ref_lines.append(
+            f"Q{cur_q} {cur_year - 1} reported delivery: **{prior_year_total:,}**"
+        )
+    if prev_q_total:
+        ref_lines.append(
+            f"Previous quarter (Q{prev_q} {prev_year}): **{prev_q_total:,}**"
+        )
+    if ref_lines:
+        st.caption("Reference (global, Tesla IR) — " + " · ".join(ref_lines) +
+                   ". Tracked total above is partial because we only cover "
+                   "the markets with public data.")
+
+    # ── Shanghai production (leading indicator, not in delivery total) ───
+    if not china_wholesale.empty:
+        st.markdown("---")
+        st.markdown("#### Shanghai production (leading indicator)")
+        st.caption(
+            "CPCA wholesale = Giga Shanghai's monthly output. Includes "
+            "domestic deliveries AND vehicles in transit to export markets. "
+            "Leads delivery numbers by 1-2 months because exported vehicles "
+            "show up in Europe's registration data later. Useful as a "
+            "forward signal — **do NOT add to the tracked total above**."
+        )
+        cw_display = china_wholesale.copy().sort_values("period_start")
+        cw_display["Month"] = cw_display["period_start"].dt.strftime("%b %Y")
+        cw_display["Units"] = cw_display["units"].apply(lambda x: f"{int(x):,}")
+        st.dataframe(cw_display[["Month", "Units", "notes"]]
+                       .rename(columns={"notes": "Notes"}),
+                     width="stretch", hide_index=True,
+                     height=35 * (len(cw_display) + 1) + 3)
+
+    # ── Historical Tesla IR context ──────────────────────────────────────
     st.markdown("#### Tesla reported quarterly deliveries (for context)")
     hist = df[
         (df["country"] == "Global") &
@@ -639,7 +735,8 @@ def _tab_quarter(df: pd.DataFrame) -> None:
         hist_display["Deliveries"] = hist_display["Deliveries"].apply(
             lambda x: f"{int(x):,}"
         )
-        st.dataframe(hist_display, use_container_width=True, hide_index=True)
+        st.dataframe(hist_display, width="stretch", hide_index=True,
+                     height=35 * (len(hist_display) + 1) + 3)
 
 
 def _tab_latest(df: pd.DataFrame) -> None:
@@ -654,7 +751,8 @@ def _tab_latest(df: pd.DataFrame) -> None:
     st.dataframe(
         latest[["country", "region", "period_start", "period_type",
                 "metric", "units", "source", "notes"]],
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
+        height=35 * (len(latest) + 1) + 3,
         column_config={
             "period_start": st.column_config.DateColumn("Period start"),
             "units": st.column_config.NumberColumn("Units", format="%d"),
@@ -683,42 +781,45 @@ def _tab_monthly(df: pd.DataFrame) -> None:
         height=480, hovermode="x unified",
         yaxis_title="Units", xaxis_title="",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _tab_china(df: pd.DataFrame) -> None:
-    st.subheader("China weekly insurance registrations (CnEVPost)")
-    weekly = df[(df["country"] == "China") & (df["period_type"] == "weekly")]
-    if weekly.empty:
+    st.subheader("China monthly (CPCA via CnEVPost)")
+    china = df[(df["country"] == "China") &
+               (df["period_type"] == "monthly") &
+               (df["metric"].isin(["wholesale", "retail"]))]
+    if china.empty:
         st.info(
-            "No weekly China data yet. Click 'Pull latest from CnEVPost' "
+            "No monthly China data yet. Click 'Refresh China monthly (CnEVPost)' "
             "in the sidebar."
         )
         return
-    weekly = weekly.sort_values("period_start").copy()
-    weekly["rolling_4w"] = weekly["units"].rolling(4).mean()
-    fig = px.bar(
-        weekly, x="period_start", y="units",
-        title="Tesla weekly insurance registrations in China",
-    )
-    fig.add_scatter(
-        x=weekly["period_start"], y=weekly["rolling_4w"],
-        mode="lines", name="4-week avg", line=dict(width=3),
+    china = china.sort_values("period_start").copy()
+    fig = px.line(
+        china, x="period_start", y="units", color="metric", markers=True,
+        title="Tesla China monthly: wholesale (incl. exports) vs. retail (domestic)",
     )
     fig.update_layout(
-        height=480, yaxis_title="Units", xaxis_title="", showlegend=True,
+        height=480, yaxis_title="Units", xaxis_title="",
+        hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.dataframe(
-        weekly[["period_start", "units", "notes", "source_url"]]
+        china[["period_start", "metric", "units", "notes", "source_url"]]
             .sort_values("period_start", ascending=False),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
+        height=35 * (len(china) + 1) + 3,
     )
+    st.caption("**Wholesale** is CPCA's total figure for Giga Shanghai — "
+               "includes both domestic deliveries and exports to Europe and "
+               "elsewhere. **Retail** is CPCA domestic only. The gap between "
+               "the two is roughly equal to Tesla's monthly Shanghai exports.")
 
 
 def _tab_all(df: pd.DataFrame) -> None:
     st.subheader("All ingested data")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
     if not df.empty:
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -736,8 +837,10 @@ def _tab_about() -> None:
   per-month Tesla registrations across ~16 European markets. Credit goes
   to the maintainers (Darkandstormy, Mrdoubleb, Hobbes, Troy, and others
   listed in each section of the sheet).
-- **CnEVPost** (auto-scraped): China weekly Tesla insurance registrations,
-  published Mondays/Tuesdays. <{CNEVPOST_TAG_URL}>
+- **CnEVPost** (auto-scraped): Tesla China monthly wholesale (CPCA total,
+  includes Giga Shanghai exports) and retail breakdown (CPCA domestic only).
+  Published 1-3 days after month-end (wholesale) and ~10 days after (retail).
+  <https://cnevpost.com/tesla/>
 - **Tesla IR** (in-code seed): quarterly global delivery numbers, used as
   the ground-truth reference row. Update `SEED_DATA` once per quarter
   after the press release. <https://ir.tesla.com>
@@ -746,11 +849,14 @@ def _tab_about() -> None:
 
 - `registration`: vehicle entered in a national database. Lags delivery
   by days/weeks. (European national agencies, via TMC sheet.)
-- `insurance`: vehicle insured. China-specific retail proxy. (CnEVPost.)
+- `wholesale`: CPCA's total Giga Shanghai figure — domestic retail PLUS
+  exports to Europe and elsewhere. Adding this to European registrations
+  would double-count the exports. Use it as a Shanghai-production signal,
+  not a regional addition.
+- `retail`: CPCA China domestic-only. This IS additive with European
+  registrations — they're disjoint geographies.
 - `delivery`: Tesla's reported deliveries (quarterly press release;
   global ground truth).
-- `wholesale`: factory-to-dealer shipment. CPCA China wholesale includes
-  Giga Shanghai exports, which is not the same as China retail demand.
 
 ### Limitations
 
@@ -758,12 +864,17 @@ def _tab_about() -> None:
   et al.) by a day or two because the community validates each entry
   before approving it. For a real-time read, the X feeds are faster;
   this dashboard prioritizes validated data over speed.
-- The CnEVPost scraper depends on their HTML layout. If they change it,
-  no records are inserted (it fails closed, not silently wrong). Fix the
-  regex in `_extract_tesla_units` and `_parse_week_ending`.
-- SQLite at `data/tesla_sales.db` is local-only and now only stores
-  China weekly + Tesla IR. European data is never written to disk; it's
-  fetched fresh from the TMC sheet every hour.
+- CnEVPost stopped publishing weekly Tesla insurance registrations in
+  October 2025; the dashboard switched to monthly CPCA data published
+  in their Tesla category. If they change URL patterns again the scraper
+  fails closed (no rows inserted) — fix the regexes in
+  `_extract_china_wholesale` / `_extract_china_retail`.
+- For the final month of any quarter, China retail data arrives AFTER
+  Tesla's own quarterly announcement (Tesla announces ~3 days after
+  quarter-end; CPCA retail follows ~10 days after). That means the
+  bottom-up tracker is most useful through month 2 of each quarter,
+  with Tesla's own number being the final word for month 3.
+- SQLite at `data/tesla_sales.db` is local-only.
 """)
 
 
@@ -789,7 +900,7 @@ def main() -> None:
     df = load_combined_df()
     tab_q, tab_latest, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
         ["🎯 Quarter tracker", "📊 Latest", "📈 Monthly trends",
-         "🇨🇳 China weekly", "🗂 All data", "ℹ️ About"]
+         "🇨🇳 China monthly", "🗂 All data", "ℹ️ About"]
     )
     with tab_q:
         _tab_quarter(df)
