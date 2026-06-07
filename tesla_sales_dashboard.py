@@ -929,45 +929,50 @@ def _tab_monthly(df: pd.DataFrame) -> None:
     st.plotly_chart(fig, width="stretch")
 
 
-def _tab_china(df: pd.DataFrame) -> None:
-    st.subheader("China monthly (CPCA via CnEVPost)")
-    china = df[(df["country"] == "China") &
-               (df["period_type"] == "monthly") &
-               (df["metric"].isin(["wholesale", "retail"]))]
-    if china.empty:
-        st.info(
-            "No monthly China data yet. Click 'Refresh China monthly (CnEVPost)' "
-            "in the sidebar."
-        )
-        return
-    china = china.sort_values("period_start").copy()
-    fig = px.line(
-        china, x="period_start", y="units", color="metric", markers=True,
-        title="Tesla China monthly: wholesale (incl. exports) vs. retail (domestic)",
-    )
-    fig.update_layout(
-        height=480, yaxis_title="Units", xaxis_title="",
-        hovermode="x unified",
-    )
-    st.plotly_chart(fig, width="stretch")
-    st.dataframe(
-        china[["period_start", "metric", "units", "notes", "source_url"]]
-            .sort_values("period_start", ascending=False),
-        width="stretch", hide_index=True,
-        height=35 * (len(china) + 1) + 3,
-    )
-    st.caption("Wholesale = domestic + exports. Retail = domestic only. "
-               "The gap ≈ Shanghai exports.")
-
-
 def _tab_all(df: pd.DataFrame) -> None:
-    st.subheader("All ingested data")
-    st.dataframe(df, width="stretch", hide_index=True)
-    if not df.empty:
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV", csv, "tesla_sales.csv", "text/csv"
-        )
+    st.subheader("Export raw data")
+    if df.empty:
+        st.info("No data loaded.")
+        return
+
+    # Summary stats — quick health check
+    n_rows = len(df)
+    n_countries = df["country"].nunique()
+    n_metrics = df["metric"].nunique()
+    last_update = df["ingested_at"].max() if "ingested_at" in df.columns else None
+
+    s1, s2, s3 = st.columns(3)
+    s1.markdown(
+        f"<div style='font-size:0.875rem;opacity:0.7;'>Total rows</div>"
+        f"<div style='font-size:1.5rem;font-weight:400;'>{n_rows:,}</div>",
+        unsafe_allow_html=True,
+    )
+    s2.markdown(
+        f"<div style='font-size:0.875rem;opacity:0.7;'>Countries</div>"
+        f"<div style='font-size:1.5rem;font-weight:400;'>{n_countries}</div>",
+        unsafe_allow_html=True,
+    )
+    s3.markdown(
+        f"<div style='font-size:0.875rem;opacity:0.7;'>Metrics</div>"
+        f"<div style='font-size:1.5rem;font-weight:400;'>{n_metrics}</div>",
+        unsafe_allow_html=True,
+    )
+    if last_update is not None:
+        st.caption(f"Last ingest timestamp: `{last_update}`")
+
+    st.markdown("<div style='margin-top: 1.5rem;'></div>",
+                unsafe_allow_html=True)
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download full dataset (CSV)",
+        csv, "tesla_deliveries.csv", "text/csv",
+        width="stretch",
+    )
+    st.caption(
+        "Includes all rows: European per-model registrations, China monthly "
+        "wholesale/retail, Tesla IR quarterly figures, and any manual RoW "
+        "entries. Best for spreadsheet/script analysis."
+    )
 
 
 def _tab_about() -> None:
@@ -1034,16 +1039,14 @@ def main() -> None:
         _sidebar_refresh()
 
     df = load_combined_df()
-    tab_q, tab_monthly, tab_china, tab_all, tab_about = st.tabs(
+    tab_q, tab_monthly, tab_all, tab_about = st.tabs(
         ["🎯 Quarter tracker", "📈 Monthly trends",
-         "🇨🇳 China monthly", "🗂 All data", "ℹ️ About"]
+         "🗂 Export", "ℹ️ About"]
     )
     with tab_q:
         _tab_quarter(df)
     with tab_monthly:
         _tab_monthly(df)
-    with tab_china:
-        _tab_china(df)
     with tab_all:
         _tab_all(df)
     with tab_about:
